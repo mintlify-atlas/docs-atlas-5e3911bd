@@ -1,0 +1,190 @@
+---
+title: How it works
+description: Learn how the AI Basketball Referee uses computer vision to detect violations in real-time basketball games
+---
+
+The AI Basketball Referee combines two powerful computer vision techniques to automatically detect basketball violations during gameplay. By integrating basketball detection with player pose estimation, the system can identify travels, double dribbles, and other rule violations with accuracy.
+
+## System architecture
+
+The system operates on a real-time video processing pipeline that analyzes each frame through two parallel YOLO models:
+
+<Steps>
+  <Step title="Video capture">
+    The system captures video frames from a webcam or video file using OpenCV's `VideoCapture` interface.
+  </Step>
+  
+  <Step title="Dual model processing">
+    Each frame is simultaneously processed by two specialized YOLO models:
+    - **basketballModel.pt**: Custom trained model for basketball detection
+    - **yolov8s-pose.pt**: Pre-trained model for human pose estimation
+  </Step>
+  
+  <Step title="Feature extraction">
+    The basketball model extracts ball position and movement data, while the pose model identifies 17 keypoints on each player's body.
+  </Step>
+  
+  <Step title="Rule application">
+    The system applies basketball rule logic to the combined data to detect violations in real-time.
+  </Step>
+  
+  <Step title="Visual feedback">
+    Detected violations are highlighted on the video feed with colored tints and text overlays.
+  </Step>
+</Steps>
+
+## Model initialization
+
+The system loads both YOLO models at startup:
+
+```python
+from ultralytics import YOLO
+
+# Load the custom basketball detection model
+ball_model = YOLO("basketballModel.pt")
+
+# Load the pre-trained pose estimation model
+pose_model = YOLO("yolov8s-pose.pt")
+```
+
+<Info>
+The basketball detection model (basketballModel.pt) was trained on 3,000 annotated images containing various basketball poses, lighting conditions, and backgrounds.
+</Info>
+
+## Real-time processing loop
+
+The core processing happens in a continuous loop that reads frames, processes them, and displays results:
+
+```python
+cap = cv2.VideoCapture(0)  # Open webcam
+
+while cap.isOpened():
+    success, frame = cap.read()
+    
+    if success:
+        # Ball detection with 0.65 confidence threshold
+        ball_results = ball_model(frame, verbose=False, conf=0.65)
+        
+        # Pose detection with 0.5 confidence threshold
+        pose_results = pose_model(frame, verbose=False, conf=0.5)
+        
+        # Process results and detect violations
+        # ...
+        
+        cv2.imshow("Basketball Referee AI", annotated_frame)
+```
+
+<Note>
+The confidence thresholds (0.65 for basketball, 0.5 for pose) are tuned to balance detection accuracy with false positive rates.
+</Note>
+
+## Frame annotation and visualization
+
+The system combines outputs from both models to create an annotated frame:
+
+```python
+# Get annotated frames from both models
+annotated_frame = ball_results.plot()
+pose_annotated_frame = pose_results[0].plot()
+
+# Blend the two frames together
+combined_frame = cv2.addWeighted(
+    annotated_frame, 0.6, 
+    pose_annotated_frame, 0.4, 
+    0
+)
+```
+
+When violations are detected, the system applies colored tints to the frame:
+
+```python
+# Blue tint for travel violations
+blue_tint = np.full_like(combined_frame, (255, 0, 0), dtype=np.uint8)
+combined_frame = cv2.addWeighted(combined_frame, 0.7, blue_tint, 0.3, 0)
+
+# Red tint for double dribble violations
+red_tint = np.full_like(frame, (0, 0, 255), dtype=np.uint8)
+frame = cv2.addWeighted(frame, 0.7, red_tint, 0.3, 0)
+```
+
+## Violation detection workflow
+
+The system implements specific detection logic for each violation type:
+
+### Travel detection
+
+Travels are detected by monitoring step count without corresponding dribbles:
+
+```python
+# Travel occurs when player takes 2+ steps with ball but no dribbles
+if ball_detected and step_count >= 2 and dribble_count == 0:
+    print("Travel detected!")
+    step_count = 0
+    travel_detected = True
+    travel_timestamp = time.time()
+```
+
+### Double dribble detection
+
+Double dribbles are identified by tracking ball holding state and subsequent dribbles:
+
+```python
+# Double dribble occurs when player holds ball then starts dribbling again
+if self.was_holding and self.dribble_count > 0:
+    self.double_dribble_time = time.time()
+    self.was_holding = False
+    self.dribble_count = 0
+    print("Double dribble!")
+```
+
+<Warning>
+The system requires clear visibility of both the basketball and player keypoints. Occlusions or poor lighting can impact detection accuracy.
+</Warning>
+
+## Performance optimizations
+
+The system includes several optimizations for real-time performance:
+
+- **Frame buffering**: Maintains a rolling buffer of 30 frames to capture context before violations
+- **Conditional processing**: Only processes frames when video capture is successful
+- **Efficient data structures**: Uses NumPy arrays for fast numerical operations
+- **Threshold tuning**: Configurable thresholds allow balancing speed vs. accuracy
+
+```python
+from collections import deque
+
+# Buffer to hold recent frames
+frame_buffer = deque(maxlen=30)
+
+while cap.isOpened():
+    success, frame = cap.read()
+    if success:
+        frame_buffer.append(frame)
+        # Process frame...
+```
+
+## Customization options
+
+You can adjust several parameters to tune the system for your specific use case:
+
+<Accordion title="Detection thresholds">
+  - `conf=0.65`: Basketball detection confidence threshold
+  - `conf=0.5`: Pose detection confidence threshold
+  - `dribble_threshold = 18`: Minimum y-coordinate change to count as a dribble
+  - `step_threshold = 5`: Minimum ankle movement to count as a step
+</Accordion>
+
+<Accordion title="Timing parameters">
+  - `hold_duration = 0.85`: Seconds ball must be near wrist to count as holding
+  - `max_ball_not_detected_frames = 20`: Frames before resetting step count
+  - `min_wait_frames = 7`: Cooldown frames between step detections
+</Accordion>
+
+<Accordion title="Distance thresholds">
+  - `hold_threshold = 300`: Pixel distance for ball-to-wrist proximity
+  - Foul detection: `< 40` pixels between defender wrist and shooter body parts
+</Accordion>
+
+<Tip>
+Start with the default parameters and adjust incrementally based on your video quality, camera angle, and court size.
+</Tip>

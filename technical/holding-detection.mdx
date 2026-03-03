@@ -1,0 +1,427 @@
+---
+title: Ball holding detection implementation
+description: Technical documentation for the basketball holding detection algorithm using pose estimation and object detection
+---
+
+## Overview
+
+The ball holding detection system identifies when a player is holding the basketball for an extended period using dual YOLO models. It combines pose estimation (to track wrist positions) with object detection (to locate the ball) and calculates proximity over time to determine holding violations.
+
+## Architecture
+
+The implementation uses a class-based architecture with the `BallHoldingDetector` class managing state, dual model inference, and temporal analysis.
+
+### Core components
+
+- **Dual YOLO models**: Pose estimation and ball detection
+- **Proximity calculation**: Euclidean distance between ball and wrists
+- **Temporal tracking**: Time-based holding duration monitoring
+- **Visual feedback**: Frame tinting to indicate holding state
+
+## System initialization
+
+### Model setup
+
+```python
+class BallHoldingDetector:
+    def __init__(self):
+        # Load the YOLO models for pose estimation and ball detection
+        self.pose_model = YOLO("yolov8s-pose.pt")
+        self.ball_model = YOLO("basketballModel.pt")
+
+        # Open the webcam
+        self.cap = cv2.VideoCapture(0)
+```
+
+The system uses two specialized models:
+- **Pose model**: YOLOv8s-pose for human keypoint detection
+- **Ball model**: Custom-trained model for basketball detection
+
+<Info>
+Running two YOLO models per frame is computationally intensive. On lower-end hardware, consider reducing the inference resolution or processing every nth frame.
+</Info>
+
+### Body part indices
+
+```python
+# Define the body part indices. Switch left and right to account for the mirrored image.
+self.body_index = {
+    "left_wrist": 10,  # switched
+    "right_wrist": 9,  # switched
+}
+```
+
+<Warning>
+The indices are intentionally swapped because the webcam produces a mirrored image. Index 10 corresponds to the right wrist in the model but appears as the left wrist in the mirrored feed.
+</Warning>
+
+### State variables
+
+```python
+# Initialize variables to store the hold start time and the hold flag
+self.hold_start_time = None
+self.is_holding = False
+
+# Define the holding duration (in seconds)
+self.hold_duration = 0.85
+
+# Threshold for the distance to be considered as holding
+self.hold_threshold = 300
+```
+
+**Key parameters:**
+
+| Parameter | Value | Purpose |
+|-----------|-------|----------|
+| `hold_duration` | 0.85 seconds | Minimum time before triggering holding violation |
+| `hold_threshold` | 300 pixels | Maximum distance from wrist to ball to count as holding |
+| `hold_start_time` | None | Timestamp when holding began (None if not holding) |
+| `is_holding` | False | Flag indicating current holding state |
+
+## Detection algorithm
+
+### Frame processing pipeline
+
+The `process_frame` method orchestrates the detection workflow:
+
+```python
+def process_frame(self, frame):
+    # Perform pose estimation on the frame
+    pose_results = self.pose_model(frame, verbose=False, conf=0.5)
+    pose_annotated_frame = pose_results[0].plot()
+    rounded_results = np.round(pose_results[0].keypoints.numpy(), 1)
+
+    try:
+        # Get the keypoints for the body parts
+        left_wrist = rounded_results[0][self.body_index["left_wrist"]]
+        right_wrist = rounded_results[0][self.body_index["right_wrist"]]
+    except:
+        print("No human detected.")
+        return pose_annotated_frame, False
+```
+
+**Step 1: Pose estimation**
+- Runs YOLOv8 pose model with 50% confidence threshold
+- Extracts wrist keypoints from results
+- Handles cases where no person is detected
+
+### Ball detection
+
+```python
+# Perform ball detection on the frame
+ball_results_list = self.ball_model(frame, verbose=False, conf=0.65)
+
+# Set the ball detection flag to False before the detection
+ball_detected = False
+
+for ball_results in ball_results_list:
+    for bbox in ball_results.boxes.xyxy:
+        x1, y1, x2, y2 = bbox[:4]
+        ball_x_center = (x1 + x2) / 2
+        ball_y_center = (y1 + y2) / 2
+
+        print(
+            f"Ball coordinates: (x={ball_x_center:.2f}, y={ball_y_center:.2f})"
+        )
+
+        # Update the ball detection flag to True when the ball is detected
+        ball_detected = True
+```
+
+**Step 2: Ball detection**
+- Runs custom ball detection model with 65% confidence
+- Calculates ball center from bounding box
+- Sets flag to track whether ball is present in frame
+
+<Note>
+The higher confidence threshold (0.65 vs 0.5) for ball detection reduces false positives from round objects that aren't basketballs.
+</Note>
+
+### Proximity calculation
+
+The system calculates Euclidean distance between the ball and each wrist:
+
+```python
+# Calculate distances between the ball and the wrists
+left_distance = np.hypot(
+    ball_x_center - left_wrist[0], ball_y_center - left_wrist[1]
+)
+right_distance = np.hypot(
+    ball_x_center - right_wrist[0], ball_y_center - right_wrist[1]
+)
+
+# Check if the ball is being held
+self.check_holding(left_distance, right_distance)
+```
+
+<Accordion title="Understanding Euclidean distance calculation">
+`np.hypot(dx, dy)` computes the Euclidean distance:
+
+$$
+d = \sqrt{(x_{ball} - x_{wrist})^2 + (y_{ball} - y_{wrist})^2}
+$$
+
+**Why use hypot?**
+- More numerically stable than manual sqrt calculation
+- Avoids overflow for large coordinate values
+- Slightly faster than `np.sqrt(dx**2 + dy**2)`
+
+**Example:**
+- Ball at (400, 300)
+- Left wrist at (350, 280)
+- Distance = √[(400-350)² + (300-280)²] = √[2500 + 400] = √2900 ≈ 53.85 pixels
+</Accordion>
+
+### Holding state logic
+
+The `check_holding` method implements temporal tracking:
+
+```python
+def check_holding(self, left_distance, right_distance):
+    if min(left_distance, right_distance) < self.hold_threshold:
+        if self.hold_start_time is None:
+            self.hold_start_time = time.time()
+        elif (
+            time.time() - self.hold_start_time > self.hold_duration
+            and not self.is_holding
+        ):
+            print("The ball is being held.")
+            self.is_holding = True
+    else:
+        self.hold_start_time = None
+        self.is_holding = False
+```
+
+<Accordion title="Holding detection state machine">
+**State transitions:**
+
+1. **Initial state**: `hold_start_time = None`, `is_holding = False`
+
+2. **Ball comes near wrist** (distance < 300):
+   - Record current time: `hold_start_time = time.time()`
+   - State: Potential holding
+
+3. **Ball stays near wrist** for entire duration:
+   - Check: `time.time() - hold_start_time > 0.85`
+   - Trigger: Set `is_holding = True`
+   - State: Confirmed holding violation
+
+4. **Ball moves away** (distance ≥ 300) at any point:
+   - Reset: `hold_start_time = None`, `is_holding = False`
+   - State: Return to initial state
+
+**Key insight:** The violation only triggers if the ball remains continuously within threshold distance for the full duration. Any interruption resets the timer.
+</Accordion>
+
+### Reset mechanism
+
+When the ball is not detected, the system resets:
+
+```python
+# If the ball is not detected in the frame, reset the timer and the holding flag
+if not ball_detected:
+    self.hold_start_time = None
+    self.is_holding = False
+```
+
+This prevents false violations when:
+- Ball goes out of frame
+- Ball is occluded
+- Detection confidence drops below threshold
+
+## Thresholds and parameters
+
+### Hold threshold: 300 pixels
+
+This distance defines when the ball is considered "held":
+
+```python
+self.hold_threshold = 300
+```
+
+**Why 300 pixels?**
+- Accounts for ball radius (~50-70 pixels at typical distances)
+- Includes wrist-to-hand distance (~100-150 pixels)
+- Provides buffer for detection noise and arm positioning
+- Works across various camera angles and distances
+
+<Tip>
+If your camera is positioned differently, calibrate the threshold:
+1. Measure the pixel distance from wrist to ball when actually holding
+2. Add 20-30% margin for variation
+3. Test with different arm positions and angles
+</Tip>
+
+### Hold duration: 0.85 seconds
+
+The minimum time before triggering a violation:
+
+```python
+self.hold_duration = 0.85
+```
+
+**Rationale:**
+- Standard basketball rules vary by league (typically 3-5 seconds)
+- 0.85 seconds is conservative for demonstration purposes
+- Provides quick feedback for development/testing
+
+<Info>
+For actual basketball refereeing, increase `hold_duration` to 3.0 or 5.0 seconds to match official rules.
+</Info>
+
+### Confidence thresholds
+
+| Model | Threshold | Reasoning |
+|-------|-----------|----------|
+| Pose estimation | 0.5 (50%) | Standard threshold for visible keypoints |
+| Ball detection | 0.65 (65%) | Higher threshold to reduce false positives |
+
+## Visualization and feedback
+
+### On-screen annotations
+
+The system overlays detailed diagnostic information:
+
+```python
+cv2.putText(
+    pose_annotated_frame,
+    f"Ball: ({ball_x_center:.2f}, {ball_y_center:.2f})",
+    (10, 20),
+    cv2.FONT_HERSHEY_SIMPLEX,
+    0.5,
+    (0, 0, 0),
+    2,
+    cv2.LINE_AA,
+)
+cv2.putText(
+    pose_annotated_frame,
+    f"Left Wrist: ({left_wrist[0]:.2f}, {left_wrist[1]:.2f})",
+    (10, 40),
+    cv2.FONT_HERSHEY_SIMPLEX,
+    0.5,
+    (0, 0, 0),
+    2,
+    cv2.LINE_AA,
+)
+```
+
+**Displayed information:**
+- Ball coordinates
+- Left wrist coordinates
+- Right wrist coordinates
+- Minimum distance (differentials)
+- Holding status (Yes/No)
+
+### Visual holding indicator
+
+When holding is detected, the frame receives a blue tint:
+
+```python
+# Apply a blue tint if the ball is being held
+if self.is_holding:
+    blue_tint = np.full_like(
+        pose_annotated_frame, (255, 0, 0), dtype=np.uint8
+    )
+    pose_annotated_frame = cv2.addWeighted(
+        pose_annotated_frame, 0.7, blue_tint, 0.3, 0
+    )
+```
+
+<Accordion title="How the blue tint works">
+**Implementation details:**
+
+1. **Create tint layer**: `np.full_like()` generates a pure blue image matching frame dimensions
+   - BGR format: (255, 0, 0) = blue
+
+2. **Blend with original**: `cv2.addWeighted()` combines images
+   - Original frame: 70% weight
+   - Blue tint: 30% weight
+   - Formula: `output = 0.7 × original + 0.3 × blue`
+
+3. **Result**: Subtle blue overlay that doesn't obscure the video but clearly indicates holding state
+</Accordion>
+
+## Error handling
+
+### No human detected
+
+```python
+try:
+    left_wrist = rounded_results[0][self.body_index["left_wrist"]]
+    right_wrist = rounded_results[0][self.body_index["right_wrist"]]
+except:
+    print("No human detected.")
+    return pose_annotated_frame, False
+```
+
+- Returns annotated frame without ball detection
+- Prevents crash when keypoints array is empty
+- Allows system to continue when person re-enters frame
+
+### Ball not detected
+
+```python
+if not ball_detected:
+    self.hold_start_time = None
+    self.is_holding = False
+```
+
+- Resets holding state immediately
+- Prevents false violations from stale state
+- Handles occlusion and out-of-frame scenarios
+
+<Warning>
+If ball detection is intermittent (flickering in/out of detection), the hold timer will repeatedly reset, potentially preventing legitimate violations from being detected.
+</Warning>
+
+## Performance considerations
+
+### Dual model inference
+
+Running two YOLO models per frame is computationally expensive:
+
+- **Pose estimation**: ~30-50ms on GPU, ~200-400ms on CPU
+- **Ball detection**: ~20-40ms on GPU, ~150-300ms on CPU
+- **Total**: ~50-90ms per frame (GPU) or ~350-700ms (CPU)
+
+<Tip>
+For real-time performance on CPU:
+1. Use smaller model variants (YOLOv8n instead of YOLOv8s)
+2. Reduce input resolution
+3. Process every 2nd or 3rd frame
+4. Use GPU acceleration if available
+</Tip>
+
+### Memory efficiency
+
+- **Single person tracking**: Only processes first detected person
+- **Minimal state**: Just three variables tracked over time
+- **No frame buffering**: Processes frames individually
+
+## Limitations and edge cases
+
+1. **Single player tracking**: Only monitors first detected person
+2. **Mirrored coordinates**: Assumes mirrored webcam feed (left/right swapped)
+3. **Fixed threshold**: Doesn't adapt to different camera distances
+4. **No hand detection**: Uses wrist position as proxy for hand holding
+5. **Intermittent detection**: Timer resets if ball detection drops below confidence
+
+<Info>
+For production use, consider:
+- Multi-player tracking with unique IDs
+- Adaptive thresholds based on camera calibration
+- Hand keypoints (if available) for more accurate holding detection
+- Temporal smoothing to handle intermittent detections
+</Info>
+
+## Coordinate system notes
+
+The system operates in pixel space:
+
+- **Origin (0,0)**: Top-left corner of frame
+- **Distance units**: Pixels (not real-world measurements)
+- **Scale dependency**: Threshold values depend on camera resolution and distance
+
+<Note>
+If you change camera resolution, you'll need to recalibrate the `hold_threshold` value. A 1920×1080 camera will have different pixel distances than a 640×480 camera for the same physical distance.
+</Note>

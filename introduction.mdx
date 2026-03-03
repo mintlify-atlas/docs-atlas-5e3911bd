@@ -1,0 +1,119 @@
+---
+title: AI Basketball Referee
+description: A computer vision system that uses YOLO models to detect basketball violations like travels and double dribbles in real-time
+---
+
+# AI Basketball Referee
+
+The AI Basketball Referee is a cutting-edge computer vision system that brings automated officiating to basketball games. Using custom-trained YOLO (You Only Look Once) models and pose estimation, it detects basketball violations in real-time with the same precision sports like tennis and track & field have achieved.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get up and running with the AI Basketball Referee in minutes
+  </Card>
+  <Card title="Travel detection" icon="person-walking" href="/violations/travel-detection">
+    Detect when players take steps without dribbling
+  </Card>
+  <Card title="Double dribble detection" icon="basketball" href="/violations/double-dribble">
+    Identify when players dribble after holding the ball
+  </Card>
+  <Card title="Basketball detection" icon="brain" href="/concepts/basketball-detection">
+    Learn about the custom YOLO model trained on 3000+ images
+  </Card>
+</CardGroup>
+
+## How it works
+
+The system combines two powerful computer vision techniques to analyze basketball gameplay:
+
+<Steps>
+  <Step title="Basketball detection">
+    A custom YOLO model trained on 3,000 annotated images detects basketballs in each video frame. The model predicts bounding boxes around detected basketballs and tracks their position and movement over time.
+  </Step>
+  
+  <Step title="Player pose estimation">
+    YOLO pose estimation identifies and tracks keypoints on players' bodies, including ankles, knees, hips, elbows, and wrists. These keypoints enable accurate tracking of player movements.
+  </Step>
+  
+  <Step title="Violation detection">
+    By analyzing the relationship between ball position and player keypoints across consecutive frames, the system applies predefined rules to detect travels and double dribbles.
+  </Step>
+  
+  <Step title="Real-time feedback">
+    Violations are highlighted on the video feed with visual indicators, making it easy for referees and users to review calls. The system also generates logs for further analysis.
+  </Step>
+</Steps>
+
+## Basketball detection model
+
+The core of the basketball detection system is a custom-trained YOLO model (`basketballModel.pt`) that has learned to recognize basketballs across various conditions:
+
+- **3,000+ annotated images** covering diverse basketball poses, lighting conditions, and backgrounds
+- **Real-time inference** processing video frames as they're captured
+- **High confidence thresholds** (0.65) to minimize false positives
+- **Bounding box predictions** that track ball position frame-by-frame
+
+<Note>
+  The basketball detection model file is too large for GitHub and must be downloaded separately from [Google Drive](https://drive.google.com/file/d/1e6HLRuhh1IEmxOFaxHQMxfRqhzD92t3B/view?usp=sharing).
+</Note>
+
+## Travel detection
+
+Traveling occurs when a player takes steps without dribbling the ball. The system detects this by:
+
+1. **Tracking ankle movement** - Monitors vertical displacement of left and right ankle keypoints
+2. **Counting steps** - Increments step count when ankle displacement exceeds threshold (5 pixels)
+3. **Monitoring dribbles** - Tracks ball vertical movement to detect dribble bounces
+4. **Applying the rule** - Flags a travel when step count ≥ 2 while dribble count = 0
+
+When a travel is detected:
+- The frame gets a blue tint overlay
+- "Travel Detected!" appears on screen
+- The system saves 30 frames before and 60 frames after the violation for review
+- Footage is automatically saved to the `travel_footage/` directory
+
+## Double dribble detection
+
+A double dribble violation happens when a player dribbles, holds the ball, then starts dribbling again. The detection logic:
+
+1. **Wrist-to-ball proximity** - Calculates distance between ball center and player wrists
+2. **Hold detection** - Flags holding when distance < 300 pixels for > 0.85 seconds
+3. **Dribble tracking** - Monitors ball vertical motion to count new dribbles
+4. **Violation trigger** - Detects double dribble when player held ball (`was_holding=true`) and starts a new dribble (`dribble_count > 0`)
+
+Visual feedback includes:
+- Blue tint while the ball is being held
+- Red tint when a double dribble is detected
+- "Double dribble!" message displayed for 3 seconds
+- Real-time debug info showing ball position, wrist coordinates, and holding status
+
+## Why this matters
+
+Basketball has lagged behind other sports in adopting computer vision for officiating. Tennis uses Hawk-Eye for line calls, track & field uses photo finish cameras, but basketball still relies heavily on human judgment for calls that can change championship outcomes.
+
+<Info>
+  The AI Basketball Referee has been featured in:
+  - [Georgia Tech News](https://news.gatech.edu/news/2023/07/25/tech-student-brings-artificial-intelligence-basketball-officiating)
+  - [Hackster.io](https://www.hackster.io/news/ai-basketball-referee-detects-traveling-ed1ed45f8ccd)
+  - [SingleStore Webinar](https://www.singlestore.com/resources/webinar-how-to-build-an-openai-basketball-referee-system-with-computer-vision-2023-07/)
+  - Overtime Instagram (7M+ followers)
+</Info>
+
+This system demonstrates that computer vision can:
+- Make basketball games fairer for players and fans
+- Collect valuable data for machine learning and statistical analysis
+- Provide objective review tools for referees and coaches
+- Improve player performance through detailed movement analysis
+
+## Customizability and expansion
+
+The system is designed to be highly customizable:
+
+- **Detection thresholds** - Adjust confidence levels for ball and pose detection
+- **Violation sensitivity** - Tune step thresholds, dribble thresholds, and hold duration
+- **Video sources** - Use webcam (`cv2.VideoCapture(0)`) or video files (`cv2.VideoCapture('video.mp4')`)
+- **Additional violations** - Extend the system to detect blocking fouls, carrying, and other violations
+
+<Tip>
+  The codebase includes experimental implementations for blocking foul detection, step counting, and dribble counting that you can build upon for your specific use case.
+</Tip>

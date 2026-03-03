@@ -1,0 +1,154 @@
+---
+title: Travel detection
+description: Learn how the AI referee detects traveling violations in real-time using computer vision and pose estimation
+---
+
+The travel detection system identifies when a player takes more than two steps without dribbling the basketball. This violation is detected through a combination of ball tracking and player movement analysis.
+
+## How it works
+
+The system uses two YOLO models working in tandem to detect traveling violations:
+
+<Steps>
+  <Step title="Ball position tracking">
+    The basketball detection model tracks the ball's position and vertical movement to identify dribbles
+  </Step>
+  <Step title="Pose estimation">
+    The pose model tracks the player's ankle positions to count steps taken
+  </Step>
+  <Step title="Violation logic">
+    When the player takes 2 or more steps with the ball detected and zero dribbles, a travel is called
+  </Step>
+</Steps>
+
+## Detection thresholds
+
+The algorithm uses several key thresholds to ensure accurate detection:
+
+| Parameter | Value | Purpose |
+|-----------|-------|----------|
+| `dribble_threshold` | 18 pixels | Minimum vertical ball movement to register as a dribble |
+| `step_threshold` | 5 pixels | Minimum ankle displacement to count as a step |
+| `max_ball_not_detected_frames` | 20 frames | Frames without ball detection before resetting step count |
+| `min_wait_frames` | 7 frames | Cooldown period between step detections |
+
+<Note>
+  The threshold values are calibrated for standard webcam footage and may need adjustment based on your camera setup and distance from the court.
+</Note>
+
+## Dribble detection algorithm
+
+Dribbles are detected by analyzing the vertical motion of the basketball. The system tracks the ball's center point and calculates the change in y-coordinate between frames.
+
+```python travel_detection.py
+x_center = (x1 + x2) / 2
+y_center = (y1 + y2) / 2
+
+if prev_y_center is not None:
+    delta_y = y_center - prev_y_center
+
+    if (
+        prev_delta_y is not None
+        and prev_delta_y > dribble_threshold
+        and delta_y < -dribble_threshold
+    ):
+        dribble_count += 1
+        total_dribble_count += 1
+
+    prev_delta_y = delta_y
+```
+
+The algorithm looks for a pattern where the ball moves down significantly (prev_delta_y > 18) followed by upward movement (delta_y < -18), indicating a bounce off the floor.
+
+## Step counting mechanism
+
+Steps are counted by tracking the vertical displacement of both ankles using pose estimation keypoints:
+
+```python travel_detection.py
+if (
+    prev_left_ankle_y is not None
+    and prev_right_ankle_y is not None
+    and wait_frames == 0
+):
+    left_diff = abs(left_ankle[1] - prev_left_ankle_y)
+    right_diff = abs(right_ankle[1] - prev_right_ankle_y)
+
+    if max(left_diff, right_diff) > step_threshold:
+        step_count += 1
+        total_step_count += 1
+        wait_frames = min_wait_frames
+```
+
+<Info>
+  The system tracks both ankles and uses the maximum displacement to account for either foot moving. A cooldown period prevents double-counting the same step.
+</Info>
+
+## Travel violation trigger
+
+A traveling violation is called when all three conditions are met simultaneously:
+
+```python travel_detection.py
+if ball_detected and step_count >= 2 and dribble_count == 0:
+    print("Travel detected!")
+    step_count = 0
+    travel_detected = True
+    travel_timestamp = time.time()
+```
+
+<Warning>
+  The step count resets whenever a dribble is detected or when the ball is not visible for more than 20 frames. This prevents false positives when players are passing or shooting.
+</Warning>
+
+## Visual feedback
+
+When a travel is detected, the system provides immediate visual feedback:
+
+- **Blue tint**: The entire frame is tinted blue for 3 seconds
+- **Text overlay**: "Travel Detected!" appears at the top right
+- **Automatic recording**: The violation is saved to video, including 30 frames before detection
+
+```python travel_detection.py
+if travel_detected:
+    blue_tint = np.full_like(combined_frame, (255, 0, 0), dtype=np.uint8)
+    combined_frame = cv2.addWeighted(combined_frame, 0.7, blue_tint, 0.3, 0)
+
+    cv2.putText(
+        combined_frame,
+        "Travel Detected!",
+        (frame_width - 600, 150),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        2,
+        (255, 255, 255),
+        4,
+        cv2.LINE_AA,
+    )
+```
+
+## Frame buffering and recording
+
+The system maintains a 30-frame buffer to capture footage before the violation occurs:
+
+```python travel_detection.py
+frame_buffer = deque(maxlen=30)
+save_frames = 60
+
+# When travel is detected
+for f in frame_buffer:
+    out.write(f)
+```
+
+This creates a complete video clip showing the context leading up to the violation, saved to the `travel_footage/` directory.
+
+<Tip>
+  You can adjust the `save_frames` parameter (line 54) to capture more or fewer frames after the violation is detected.
+</Tip>
+
+## Confidence thresholds
+
+Both YOLO models use confidence thresholds to filter out uncertain detections:
+
+- **Ball detection**: 0.65 confidence minimum
+- **Pose detection**: 0.5 confidence minimum
+- **Keypoint visibility**: 0.5 confidence for ankle tracking
+
+These thresholds balance detection sensitivity with accuracy, reducing false positives from partial occlusions or motion blur.

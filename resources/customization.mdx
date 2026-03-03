@@ -1,0 +1,307 @@
+---
+title: Customization guide
+description: Learn how to customize detection parameters and thresholds in the AI Basketball Referee
+---
+
+The AI Basketball Referee has been designed to be customizable and expandable. You can fine-tune various parameters to suit your specific requirements, video quality, and detection accuracy needs.
+
+## Video input configuration
+
+You can configure the video source for all detection scripts.
+
+### Using a webcam
+
+```python
+cap = cv2.VideoCapture(0)  # 0 for default webcam, 1 for second camera
+```
+
+### Using a video file
+
+```python
+cap = cv2.VideoCapture('video.mp4')  # Relative path to video file
+```
+
+<Tip>
+Use video files to test and tune parameters on consistent footage before deploying to live webcam feeds.
+</Tip>
+
+## Detection confidence thresholds
+
+Adjust the confidence thresholds to balance between detection accuracy and sensitivity.
+
+### Basketball detection confidence
+
+Found in: `travel_detection.py`, `double_dribble.py`, `holding_basketball.py`
+
+```python
+ball_results_list = ball_model(frame, verbose=False, conf=0.65)
+```
+
+- **Default**: 0.65 (65% confidence)
+- **Lower values**: Detect more basketballs but may include false positives
+- **Higher values**: Only detect basketballs when very confident, may miss some detections
+
+### Pose estimation confidence
+
+Found in: All scripts using pose detection
+
+```python
+pose_results = pose_model(frame, verbose=False, conf=0.5)
+```
+
+- **Default**: 0.5 (50% confidence)
+- **Lower values**: Detect more pose keypoints but may be less accurate
+- **Higher values**: Only use highly confident keypoint detections
+
+## Dribble detection parameters
+
+Customize how dribbles are detected based on basketball movement.
+
+### Dribble threshold
+
+Found in: `travel_detection.py`, `double_dribble.py`, `dribble_counting.py`
+
+```python
+dribble_threshold = 18
+```
+
+- **What it does**: Minimum vertical movement (in pixels) required to count as a dribble
+- **Lower values**: More sensitive, may count small ball movements as dribbles
+- **Higher values**: Less sensitive, requires more pronounced ball movement
+
+### Dribble detection logic
+
+A dribble is counted when:
+1. The ball moves downward by more than `dribble_threshold` pixels
+2. Followed by upward movement of more than `dribble_threshold` pixels
+
+```python
+if (
+    prev_delta_y is not None
+    and prev_delta_y > dribble_threshold
+    and delta_y < -dribble_threshold
+):
+    dribble_count += 1
+```
+
+## Step detection parameters
+
+Customize how player steps are detected using ankle movement.
+
+### Step threshold
+
+Found in: `travel_detection.py`, `step_counting.py`
+
+```python
+step_threshold = 5  # In travel_detection.py
+step_threshold = 12  # In step_counting.py
+```
+
+- **What it does**: Minimum ankle movement (in pixels) required to count as a step
+- **Lower values**: More sensitive to small movements, may count shuffles as steps
+- **Higher values**: Only count larger, more deliberate steps
+
+### Minimum wait frames
+
+Found in: `travel_detection.py`, `step_counting.py`
+
+```python
+min_wait_frames = 7  # In travel_detection.py
+min_wait_frames = 8  # In step_counting.py
+```
+
+- **What it does**: Number of frames to wait after detecting a step before counting another
+- **Lower values**: Can detect steps in rapid succession
+- **Higher values**: Prevents counting the same step multiple times
+
+### Keypoint confidence threshold
+
+For step counting, keypoints must have confidence > 0.5:
+
+```python
+if (
+    (left_knee[2] > 0.5)
+    and (right_knee[2] > 0.5)
+    and (left_ankle[2] > 0.5)
+    and (right_ankle[2] > 0.5)
+):
+    # Count steps
+```
+
+## Ball holding detection parameters
+
+Customize when a player is considered to be holding the basketball.
+
+### Hold threshold
+
+Found in: `double_dribble.py`, `holding_basketball.py`
+
+```python
+hold_threshold = 300
+```
+
+- **What it does**: Maximum distance (in pixels) between the ball and a wrist to be considered "holding"
+- **Lower values**: Requires the ball to be very close to the wrist
+- **Higher values**: More lenient, counts ball as held even when farther from wrist
+
+### Hold duration
+
+Found in: `double_dribble.py`, `holding_basketball.py`
+
+```python
+hold_duration = 0.85
+```
+
+- **What it does**: Minimum time (in seconds) the ball must be near the wrist to be considered "held"
+- **Lower values**: Counts holding faster
+- **Higher values**: Requires sustained contact before counting as a hold
+
+### Hold detection logic
+
+```python
+if min(left_distance, right_distance) < self.hold_threshold:
+    if self.hold_start_time is None:
+        self.hold_start_time = time.time()
+    elif time.time() - self.hold_start_time > self.hold_duration:
+        self.is_holding = True
+```
+
+## Travel detection parameters
+
+Customize the criteria for detecting traveling violations.
+
+### Maximum ball not detected frames
+
+Found in: `travel_detection.py`
+
+```python
+max_ball_not_detected_frames = 20
+```
+
+- **What it does**: Number of consecutive frames the ball can be undetected before resetting step count
+- **Lower values**: Resets faster when ball leaves frame
+- **Higher values**: More tolerant of temporary ball occlusion
+
+### Travel detection logic
+
+```python
+if ball_detected and step_count >= 2 and dribble_count == 0:
+    print("Travel detected!")
+```
+
+A travel is detected when:
+1. The ball is detected in the frame
+2. Player has taken 2 or more steps
+3. No dribbles have been detected
+
+## Video recording parameters
+
+When travel violations are detected, footage can be automatically saved.
+
+### Frame buffer size
+
+Found in: `travel_detection.py`
+
+```python
+frame_buffer = deque(maxlen=30)
+```
+
+- **What it does**: Number of frames to keep in buffer before travel detection
+- Captures footage leading up to the violation
+
+### Save frames after travel
+
+```python
+save_frames = 60
+```
+
+- **What it does**: Number of frames to save after travel is detected
+- Captures the violation and immediate aftermath
+
+### Video output settings
+
+```python
+fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+out = cv2.VideoWriter(filename, fourcc, 9, (frame_width, frame_height))
+```
+
+- **Codec**: MP4V for broad compatibility
+- **FPS**: 9 frames per second for output video
+
+## Foul detection parameters
+
+Customize blocking foul detection based on player proximity.
+
+### Distance threshold
+
+Found in: `blocking_foul.py`
+
+```python
+if calculate_distance(defender[dpart], shooter[spart]) < 40:
+    return True
+```
+
+- **Default**: 40 pixels
+- **What it does**: Maximum distance between defender's wrist and shooter's upper body parts to count as a foul
+- **Lower values**: Requires direct contact
+- **Higher values**: More lenient, counts fouls with nearby contact
+
+<Warning>
+The blocking foul detection is experimental and may need significant tuning based on your camera angle, resolution, and distance from players.
+</Warning>
+
+## Violation display settings
+
+Customize how violations are displayed on screen.
+
+### Tint colors
+
+- **Travel detected**: Blue tint
+  ```python
+  blue_tint = np.full_like(combined_frame, (255, 0, 0), dtype=np.uint8)
+  combined_frame = cv2.addWeighted(combined_frame, 0.7, blue_tint, 0.3, 0)
+  ```
+
+- **Double dribble detected**: Red tint
+  ```python
+  red_tint = np.full_like(pose_annotated_frame, (0, 0, 255), dtype=np.uint8)
+  pose_annotated_frame = cv2.addWeighted(pose_annotated_frame, 0.7, red_tint, 0.3, 0)
+  ```
+
+- **Holding ball**: Blue tint
+  ```python
+  blue_tint = np.full_like(pose_annotated_frame, (255, 0, 0), dtype=np.uint8)
+  pose_annotated_frame = cv2.addWeighted(pose_annotated_frame, 0.7, blue_tint, 0.3, 0)
+  ```
+
+### Display duration
+
+```python
+if travel_detected and time.time() - travel_timestamp > 3:
+    travel_detected = False
+```
+
+- **Default**: 3 seconds
+- Violation indicators remain visible for this duration
+
+## Best practices for tuning
+
+<Accordion title="Start with default values">
+  Begin with the default parameters and only adjust when you encounter specific issues with your setup.
+</Accordion>
+
+<Accordion title="Test on recorded video first">
+  Use recorded video files to test parameter changes before deploying to live feeds. This allows you to iterate quickly on the same footage.
+</Accordion>
+
+<Accordion title="Adjust for camera setup">
+  Parameters like thresholds are pixel-based, so they depend on your camera resolution, angle, and distance from players. Higher resolution cameras may need larger threshold values.
+</Accordion>
+
+<Accordion title="Document your changes">
+  Keep notes on which parameters you've changed and why. This helps you troubleshoot issues and revert changes if needed.
+</Accordion>
+
+<Accordion title="Balance sensitivity vs accuracy">
+  Lower thresholds increase sensitivity but may cause false positives. Find the balance that works for your use case.
+</Accordion>

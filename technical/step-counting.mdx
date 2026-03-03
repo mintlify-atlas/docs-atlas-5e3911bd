@@ -1,0 +1,311 @@
+---
+title: Step counting implementation
+description: Technical documentation for the pose-based step detection and counting algorithm
+---
+
+## Overview
+
+The step counting system detects player steps in real-time using YOLOv8 pose estimation. It tracks ankle positions and identifies steps based on vertical movement patterns, which is critical for detecting traveling violations in basketball.
+
+## Architecture
+
+The implementation uses a script-based approach with global state management for tracking step counts and ankle positions.
+
+### Core components
+
+- **YOLOv8 pose model**: Pre-trained model for human pose estimation
+- **Keypoint tracking**: Monitors ankle positions across frames
+- **Movement detection**: Analyzes vertical displacement of ankles
+- **Debouncing mechanism**: Prevents multiple counts for a single step
+
+## Pose estimation setup
+
+### Model initialization
+
+```python
+import cv2
+from ultralytics import YOLO
+import numpy as np
+
+# Load the YOLO model
+model = YOLO("yolov8s-pose.pt")
+
+# Open the webcam
+cap = cv2.VideoCapture(0)
+```
+
+The system uses the standard YOLOv8s pose estimation model, which detects 17 keypoints on the human body.
+
+### Body part indices
+
+```python
+# Define the body part indices
+body_index = {"left_knee": 13, "right_knee": 14, "left_ankle": 15, "right_ankle": 16}
+```
+
+<Info>
+YOLOv8 pose models use a standardized keypoint ordering. Indices 13-16 correspond to the lower leg joints, which are essential for step detection.
+</Info>
+
+## Detection algorithm
+
+### State variables
+
+The system maintains several state variables for tracking and debouncing:
+
+```python
+# Initialize step count, previous positions, and thresholds
+step_count = 0
+prev_left_ankle_y = None
+prev_right_ankle_y = None
+step_threshold = 12
+min_wait_frames = 8
+wait_frames = 0
+```
+
+**Key parameters:**
+
+| Parameter | Value | Purpose |
+|-----------|-------|----------|
+| `step_threshold` | 12 pixels | Minimum vertical movement to register as a step |
+| `min_wait_frames` | 8 frames | Debounce period after detecting a step |
+| `conf` | 0.5 | Confidence threshold for pose detection |
+
+### Keypoint extraction
+
+The system extracts ankle and knee positions from pose estimation results:
+
+```python
+# Run pose estimation
+results = model(frame, verbose=False, conf=0.5)
+annotated_frame = results[0].plot()
+
+# Round the results to the nearest decimal
+rounded_results = np.round(results[0].keypoints.numpy(), 1)
+
+# Get the keypoints for the body parts
+try:
+    left_knee = rounded_results[0][body_index["left_knee"]]
+    right_knee = rounded_results[0][body_index["right_knee"]]
+    left_ankle = rounded_results[0][body_index["left_ankle"]]
+    right_ankle = rounded_results[0][body_index["right_ankle"]]
+except:
+    print("No human detected.")
+```
+
+Each keypoint contains three values: `[x, y, confidence]`
+
+<Note>
+Rounding to one decimal place reduces noise from minor keypoint fluctuations while preserving sufficient precision for movement detection.
+</Note>
+
+### Confidence filtering
+
+Before processing, the system verifies all required keypoints have sufficient confidence:
+
+```python
+if (
+    (left_knee[2] > 0.5)
+    and (right_knee[2] > 0.5)
+    and (left_ankle[2] > 0.5)
+    and (right_ankle[2] > 0.5)
+):
+    # Process step detection
+```
+
+This ensures:
+- All four lower leg keypoints are visible
+- Each keypoint has >50% confidence
+- Prevents false detections from occluded or uncertain poses
+
+<Warning>
+If any leg keypoint has confidence ≤ 0.5, the entire frame is skipped for step counting. This may cause missed steps when the player is partially occluded.
+</Warning>
+
+### Step detection logic
+
+The core algorithm detects steps by measuring ankle displacement:
+
+```python
+if (
+    prev_left_ankle_y is not None
+    and prev_right_ankle_y is not None
+    and wait_frames == 0
+):
+    left_diff = abs(left_ankle[1] - prev_left_ankle_y)
+    right_diff = abs(right_ankle[1] - prev_right_ankle_y)
+
+    if max(left_diff, right_diff) > step_threshold:
+        step_count += 1
+        print(f"Step taken: {step_count}")
+        wait_frames = min_wait_frames
+
+prev_left_ankle_y = left_ankle[1]
+prev_right_ankle_y = right_ankle[1]
+
+if wait_frames > 0:
+    wait_frames -= 1
+```
+
+<Accordion title="Step detection algorithm breakdown">
+**How it works:**
+
+1. **Calculate vertical displacement**: Compute absolute difference in y-coordinates for both ankles
+   ```python
+   left_diff = abs(left_ankle[1] - prev_left_ankle_y)
+   right_diff = abs(right_ankle[1] - prev_right_ankle_y)
+   ```
+
+2. **Find maximum movement**: Use `max(left_diff, right_diff)` to detect whichever ankle moved more
+   - Only one ankle typically moves significantly per step
+   - Taking the maximum ensures we detect the stepping foot
+
+3. **Threshold comparison**: If movement exceeds 12 pixels, register as a step
+   - Filters out minor position adjustments
+   - Captures actual stepping motion
+
+4. **Debouncing**: Set `wait_frames = 8` after detection
+   - Prevents counting the same step multiple times
+   - At 30 FPS, this creates ~0.27 second cooldown
+   - Allows time for foot to complete its motion
+
+5. **Update state**: Store current ankle positions for next comparison
+
+6. **Decrement cooldown**: Reduce wait_frames each frame until reaching zero
+</Accordion>
+
+## Thresholds and parameters
+
+### Step threshold: 12 pixels
+
+This value represents the minimum vertical ankle movement to register as a step:
+
+- **Too low**: Counts weight shifts and minor movements as steps
+- **Too high**: Misses actual steps, especially shuffling movements
+- **Current value**: Balanced for typical basketball stepping motion
+
+<Tip>
+Adjust `step_threshold` based on camera distance. Closer cameras may need higher values (15-20), while distant cameras may need lower values (8-10).
+</Tip>
+
+### Debounce period: 8 frames
+
+`min_wait_frames` prevents multiple detections of the same step:
+
+- **At 30 FPS**: 8 frames ≈ 0.27 seconds
+- **At 60 FPS**: 8 frames ≈ 0.13 seconds
+
+**Purpose:**
+- A single step involves continuous ankle movement over multiple frames
+- Without debouncing, one step could be counted 3-5 times
+- The cooldown period ensures each step is counted exactly once
+
+<Info>
+If your camera runs at a different frame rate, you may need to adjust `min_wait_frames`. The cooldown should be long enough to cover a complete step cycle but short enough to catch rapid footwork.
+</Info>
+
+### Confidence threshold: 0.5
+
+Pose estimation runs with 50% minimum confidence:
+
+```python
+results = model(frame, verbose=False, conf=0.5)
+```
+
+Additionally, each keypoint is individually checked:
+
+```python
+if (left_knee[2] > 0.5) and (right_knee[2] > 0.5) and ...
+```
+
+This dual-layer filtering ensures robust detection even with partial occlusion.
+
+## Coordinate system
+
+The system uses OpenCV's image coordinate system:
+
+- **Origin (0,0)**: Top-left corner
+- **Y-axis**: Increases downward
+- **Ankle movement**: Steps cause vertical (y-axis) position changes
+
+<Note>
+The algorithm uses `abs()` for displacement calculation, so it detects movement in both directions. This captures both foot lifts and foot plants as potential steps.
+</Note>
+
+## Audio feedback
+
+The implementation includes audio notification capability:
+
+```python
+from gtts import gTTS
+from playsound import playsound
+import tempfile
+
+# Generate the 'Step' audio file
+tts = gTTS(text="Step", lang="en")
+temp_file = tempfile.NamedTemporaryFile(delete=False)
+tts.save(temp_file.name)
+```
+
+<Warning>
+The audio file is generated but not played in the current implementation. To enable audio feedback, add `playsound(temp_file.name)` after incrementing the step count.
+</Warning>
+
+## Error handling
+
+### No human detected
+
+When pose estimation fails:
+
+```python
+try:
+    left_knee = rounded_results[0][body_index["left_knee"]]
+    # ... other keypoints
+except:
+    print("No human detected.")
+```
+
+- Gracefully skips the frame
+- Continues processing subsequent frames
+- Previous ankle positions remain unchanged
+- Step counting resumes when human is detected again
+
+### Low confidence keypoints
+
+When keypoints don't meet confidence threshold:
+- Frame processing continues (visualization still works)
+- Step detection is skipped
+- No state variables are updated
+
+## Performance considerations
+
+### Computational efficiency
+
+- **Pose estimation**: Primary computational cost
+- **Lightweight math**: Subtraction and comparison are negligible
+- **Single person tracking**: Uses `rounded_results[0]` assuming one person
+
+<Info>
+The current implementation only tracks the first detected person. If multiple people are in frame, only person at index 0 is analyzed.
+</Info>
+
+### Frame rate dependency
+
+System behavior varies with camera frame rate:
+
+| Frame Rate | Step Threshold | Min Wait Frames | Cooldown Duration |
+|------------|----------------|-----------------|-------------------|
+| 30 FPS | 12 pixels | 8 | ~0.27 seconds |
+| 60 FPS | 12 pixels | 8 | ~0.13 seconds |
+| 15 FPS | 12 pixels | 8 | ~0.53 seconds |
+
+<Tip>
+For frame rates significantly different from 30 FPS, scale `min_wait_frames` proportionally. For example, at 60 FPS, use `min_wait_frames = 16` to maintain similar cooldown duration.
+</Tip>
+
+## Limitations
+
+1. **Single person tracking**: Only monitors first detected person
+2. **Occlusion sensitivity**: Requires all four leg keypoints to be visible
+3. **Lateral movement**: Only detects vertical ankle displacement
+4. **Pivot detection**: May not count pivot steps with minimal vertical movement

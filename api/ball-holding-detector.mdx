@@ -1,0 +1,284 @@
+---
+title: BallHoldingDetector
+description: Computer vision class that detects when a basketball player is holding the ball by tracking proximity between the ball and player's wrists
+---
+
+## Overview
+
+The `BallHoldingDetector` class uses YOLO-based computer vision to detect when a player is holding a basketball. It tracks the ball's position and the player's wrist positions, determining when the ball remains close to either wrist for a sustained duration.
+
+## Constructor
+
+### `__init__()`
+
+Initializes the detector with YOLO models, video capture, and holding detection parameters.
+
+```python
+detector = BallHoldingDetector()
+```
+
+#### Instance Variables
+
+The constructor initializes the following instance variables:
+
+<ParamField path="pose_model" type="YOLO">
+  YOLOv8 pose estimation model loaded from `yolov8s-pose.pt` for detecting player keypoints
+</ParamField>
+
+<ParamField path="ball_model" type="YOLO">
+  Custom YOLO model loaded from `basketballModel.pt` for detecting the basketball
+</ParamField>
+
+<ParamField path="cap" type="cv2.VideoCapture">
+  Video capture object for capturing frames from the default camera (index 0)
+</ParamField>
+
+<ParamField path="body_index" type="dict">
+  Dictionary mapping body part names to keypoint indices (switched to account for mirrored image):
+  - `left_wrist`: 10
+  - `right_wrist`: 9
+</ParamField>
+
+<ParamField path="hold_start_time" type="float | None">
+  Timestamp when the ball first came within holding distance of a wrist
+</ParamField>
+
+<ParamField path="is_holding" type="bool" default="False">
+  Flag indicating whether the player is currently holding the ball
+</ParamField>
+
+<ParamField path="hold_duration" type="float" default="0.85">
+  Minimum duration (in seconds) the ball must remain near a wrist to be considered held
+</ParamField>
+
+<ParamField path="hold_threshold" type="int" default="300">
+  Maximum distance (in pixels) between ball center and wrist to be considered as holding
+</ParamField>
+
+## Methods
+
+### `run()`
+
+Starts the main detection loop, processing video frames until the user quits.
+
+```python
+detector = BallHoldingDetector()
+detector.run()
+```
+
+#### Behavior
+
+- Continuously reads frames from the webcam
+- Processes each frame to detect pose and ball holding
+- Displays annotated frames with detection results
+- Exits when 'q' key is pressed
+- Releases resources (webcam and windows) on exit
+
+<Info>
+The display window is titled "YOLOv8 Inference" and shows real-time detection results.
+</Info>
+
+### `process_frame(frame)`
+
+Processes a single frame to detect the player's pose and determine if they are holding the ball.
+
+```python
+pose_annotated_frame, ball_detected = detector.process_frame(frame)
+```
+
+#### Parameters
+
+<ParamField path="frame" type="numpy.ndarray" required>
+  The video frame to process (BGR format from OpenCV)
+</ParamField>
+
+#### Returns
+
+Returns a tuple of `(pose_annotated_frame, ball_detected)`:
+
+- `pose_annotated_frame` (numpy.ndarray): Frame with pose keypoints, ball bounding box, and debug information overlaid
+- `ball_detected` (bool): `True` if a basketball was detected in the frame, `False` otherwise
+
+#### Behavior
+
+1. Runs pose estimation with confidence threshold of 0.5
+2. Creates annotated frame with pose keypoints plotted
+3. Extracts and rounds left and right wrist coordinates
+4. Runs ball detection with confidence threshold of 0.65
+5. For each detected ball:
+   - Calculates ball center coordinates from bounding box
+   - Prints ball coordinates to console
+   - Calculates Euclidean distance to both wrists
+   - Calls `check_holding()` to determine holding status
+   - Draws green bounding box around the ball
+   - Overlays debug information on the frame
+6. Applies blue tint when ball is being held
+7. Resets holding state if no ball is detected
+
+<Note>
+If no human is detected in the frame, the method returns the annotated frame with `ball_detected=False` and prints "No human detected." to the console.
+</Note>
+
+#### Debug Information Displayed
+
+The annotated frame includes the following text overlays:
+- Ball center coordinates (x, y)
+- Left wrist coordinates (x, y)
+- Right wrist coordinates (x, y)
+- Differential: minimum distance to either wrist
+- Holding status: "Yes" or "No"
+
+#### Visual Effects
+
+<Info>
+When `is_holding` is `True`, a blue tint is applied to the frame using `cv2.addWeighted()` with a 70/30 blend ratio between the original frame and the blue overlay.
+</Info>
+
+### `check_holding(left_distance, right_distance)`
+
+Determines if the ball is being held based on sustained proximity to the player's wrists.
+
+```python
+detector.check_holding(left_distance, right_distance)
+```
+
+#### Parameters
+
+<ParamField path="left_distance" type="float" required>
+  Euclidean distance (in pixels) between the ball center and the left wrist keypoint
+</ParamField>
+
+<ParamField path="right_distance" type="float" required>
+  Euclidean distance (in pixels) between the ball center and the right wrist keypoint
+</ParamField>
+
+#### Behavior
+
+- If the minimum distance to either wrist is below `hold_threshold` (300 pixels):
+  - Starts the timer by setting `hold_start_time` to current time (if not already started)
+  - If the ball has been close for longer than `hold_duration` (0.85 seconds) and not already holding:
+    - Sets `is_holding` to `True`
+    - Prints "The ball is being held." to console
+- If the ball is not close to either wrist:
+  - Resets `hold_start_time` to `None`
+  - Sets `is_holding` to `False`
+
+<Warning>
+The holding detection requires continuous proximity for the full `hold_duration`. If the ball moves away from the wrists before the duration threshold is met, the timer resets.
+</Warning>
+
+## Usage Example
+
+```python
+from holding_basketball import BallHoldingDetector
+
+# Create detector instance
+detector = BallHoldingDetector()
+
+# Start real-time detection
+detector.run()
+```
+
+<CodeGroup>
+
+```python Basic Usage
+# Initialize and run the detector
+detector = BallHoldingDetector()
+detector.run()
+```
+
+```python Custom Parameters
+# Initialize detector
+detector = BallHoldingDetector()
+
+# Customize holding detection parameters
+detector.hold_duration = 1.0  # Require 1 second of proximity
+detector.hold_threshold = 250  # Stricter distance requirement
+
+# Start detection
+detector.run()
+```
+
+```python Frame-by-Frame Processing
+# Initialize detector
+detector = BallHoldingDetector()
+
+# Process individual frames
+success, frame = detector.cap.read()
+if success:
+    annotated_frame, ball_detected = detector.process_frame(frame)
+    if detector.is_holding:
+        print("Player is holding the ball!")
+```
+
+</CodeGroup>
+
+## Detection Workflow
+
+1. **Frame Capture**: Captures video frames from the camera
+2. **Pose Estimation**: Identifies player and extracts wrist keypoint positions
+3. **Ball Detection**: Locates basketball and calculates center coordinates
+4. **Distance Calculation**: Computes Euclidean distances from ball to each wrist
+5. **Proximity Check**: Determines if ball is within `hold_threshold` of either wrist
+6. **Duration Tracking**: Times how long the ball remains in proximity
+7. **Hold Confirmation**: Sets holding status after sustained proximity exceeds `hold_duration`
+8. **Visual Feedback**: Applies blue tint and displays holding status on frame
+
+## Distance Calculation
+
+The distance between the ball and each wrist is calculated using the Euclidean distance formula:
+
+```python
+left_distance = np.hypot(
+    ball_x_center - left_wrist[0], 
+    ball_y_center - left_wrist[1]
+)
+right_distance = np.hypot(
+    ball_x_center - right_wrist[0], 
+    ball_y_center - right_wrist[1]
+)
+```
+
+The minimum of these two distances is used to determine proximity.
+
+## Visual Indicators
+
+<Info>
+**Blue Tint**: Applied to the entire frame when the player is holding the ball, providing clear visual feedback of the holding state
+</Info>
+
+<Note>
+**Green Bounding Box**: Drawn around the detected basketball in every frame where the ball is visible
+</Note>
+
+## Console Output
+
+The detector prints the following to the console:
+- Ball coordinates for each detected ball: `"Ball coordinates: (x={x:.2f}, y={y:.2f})"`
+- "No human detected." when no player is found in the frame
+- "The ball is being held." when holding is first detected
+
+## Requirements
+
+- OpenCV (cv2)
+- NumPy
+- Ultralytics YOLO
+- `yolov8s-pose.pt` model file for pose estimation
+- `basketballModel.pt` model file for basketball detection
+- Camera access for video capture
+
+## Model Configuration
+
+<ParamField path="Pose Model Confidence" type="float" default="0.5">
+  Minimum confidence threshold for detecting human pose keypoints
+</ParamField>
+
+<ParamField path="Ball Model Confidence" type="float" default="0.65">
+  Minimum confidence threshold for detecting the basketball
+</ParamField>
+
+## Notes
+
+<Note>
+The body indices are switched to account for mirrored camera images. This ensures correct left/right wrist identification when the player faces the camera.
+</Note>

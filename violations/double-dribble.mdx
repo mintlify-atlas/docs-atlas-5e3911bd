@@ -1,0 +1,225 @@
+---
+title: Double dribble detection
+description: Understand how the AI referee identifies double dribble violations using wrist-ball proximity tracking and hold duration analysis
+---
+
+The double dribble detection system identifies when a player holds the ball with both hands (or comes to a complete stop with the ball) and then starts dribbling again. This is a fundamental basketball violation enforced through sophisticated computer vision.
+
+## Detection architecture
+
+The `DoubleDribbleDetector` class combines pose estimation and ball tracking to monitor the player's interaction with the basketball:
+
+<Steps>
+  <Step title="Track ball position">
+    Detect the basketball location in each frame using a custom-trained YOLO model
+  </Step>
+  <Step title="Monitor wrist proximity">
+    Calculate the distance between the ball and both wrists to determine if the player is holding it
+  </Step>
+  <Step title="Detect hold duration">
+    Track how long the ball remains near the wrists to confirm a held ball state
+  </Step>
+  <Step title="Monitor for new dribble">
+    After a hold is confirmed, detect if the player begins dribbling again
+  </Step>
+</Steps>
+
+## Key detection parameters
+
+The algorithm relies on carefully calibrated thresholds:
+
+| Parameter | Value | Purpose |
+|-----------|-------|----------|
+| `hold_threshold` | 300 pixels | Maximum distance from wrist to ball to be considered "holding" |
+| `hold_duration` | 0.85 seconds | Minimum time ball must stay near wrist to confirm hold |
+| `dribble_threshold` | 18 pixels | Vertical ball movement required to count as a dribble |
+
+<Note>
+  The hold threshold of 300 pixels is designed for standard webcam footage. You may need to adjust this based on your camera resolution and distance from the court.
+</Note>
+
+## Wrist-ball proximity tracking
+
+The system continuously calculates the Euclidean distance between the ball and both wrists:
+
+```python double_dribble.py
+left_distance = np.hypot(
+    ball_x_center - left_wrist[0], ball_y_center - left_wrist[1]
+)
+right_distance = np.hypot(
+    ball_x_center - right_wrist[0], ball_y_center - right_wrist[1]
+)
+```
+
+The minimum distance between either wrist and the ball determines whether the player is holding it.
+
+<Info>
+  The system uses wrist keypoints (indices 9 and 10 in the YOLO pose model) rather than hand keypoints for more reliable tracking across different camera angles.
+</Info>
+
+## Hold state detection
+
+A ball is considered "held" when it remains within the hold threshold for the specified duration:
+
+```python double_dribble.py
+def check_holding(self, left_distance, right_distance):
+    if min(left_distance, right_distance) < self.hold_threshold:
+        if self.hold_start_time is None:
+            self.hold_start_time = time.time()
+        elif time.time() - self.hold_start_time > self.hold_duration:
+            self.is_holding = True
+            self.was_holding = True
+            self.dribble_count = 0
+    else:
+        self.hold_start_time = None
+        self.is_holding = False
+```
+
+This approach prevents false positives from brief touches during normal dribbling. The 0.85-second threshold ensures only deliberate holds trigger the violation logic.
+
+<Warning>
+  When a hold is confirmed, the dribble count resets to zero. This is critical for detecting when the player starts a new dribble sequence after holding.
+</Warning>
+
+## Dribble counting algorithm
+
+Dribbles are detected by analyzing vertical ball motion between consecutive frames:
+
+```python double_dribble.py
+def update_dribble_count(self, x_center, y_center):
+    if self.prev_y_center is not None:
+        delta_y = y_center - self.prev_y_center
+
+        if (
+            self.prev_delta_y is not None
+            and delta_y < 0
+            and self.prev_delta_y > self.dribble_threshold
+        ):
+            self.dribble_count += 1
+
+        self.prev_delta_y = delta_y
+```
+
+The algorithm looks for the ball moving downward significantly (prev_delta_y > 18) followed by upward movement (delta_y < 0), indicating a bounce.
+
+## Violation trigger logic
+
+A double dribble violation is called when the player dribbles after previously holding the ball:
+
+```python double_dribble.py
+def check_double_dribble(self):
+    if self.was_holding and self.dribble_count > 0:
+        self.double_dribble_time = time.time()
+        self.was_holding = False
+        self.dribble_count = 0
+        print("Double dribble!")
+```
+
+The `was_holding` flag persists even after `is_holding` becomes false, allowing the system to detect when dribbling resumes.
+
+<Tip>
+  The violation check happens in the main loop rather than inside the frame processing function, ensuring it's evaluated every frame regardless of detection success.
+</Tip>
+
+## Visual feedback system
+
+The system provides multiple layers of real-time visual feedback:
+
+### During ball holding
+
+When the player is holding the ball, the frame receives a blue tint:
+
+```python double_dribble.py
+if self.is_holding:
+    blue_tint = np.full_like(
+        pose_annotated_frame, (255, 0, 0), dtype=np.uint8
+    )
+    pose_annotated_frame = cv2.addWeighted(
+        pose_annotated_frame, 0.7, blue_tint, 0.3, 0
+    )
+```
+
+### When violation is detected
+
+For 3 seconds after detection, the frame is tinted red with a violation message:
+
+```python double_dribble.py
+if (
+    self.double_dribble_time
+    and time.time() - self.double_dribble_time <= 3
+):
+    red_tint = np.full_like(
+        pose_annotated_frame, (0, 0, 255), dtype=np.uint8
+    )
+    pose_annotated_frame = cv2.addWeighted(
+        pose_annotated_frame, 0.7, red_tint, 0.3, 0
+    )
+
+    cv2.putText(
+        pose_annotated_frame,
+        "Double dribble!",
+        (self.frame_width - 600, 150),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        2,
+        (255, 255, 255),
+        4,
+        cv2.LINE_AA,
+    )
+```
+
+## Debug overlay
+
+The system displays real-time metrics on the frame for monitoring and calibration:
+
+- Ball center coordinates
+- Left and right wrist positions
+- Minimum wrist-to-ball distance
+- Current holding status (Yes/No)
+- Current dribble count
+
+```python double_dribble.py
+cv2.putText(
+    pose_annotated_frame,
+    f"Differentials: ({min(left_distance, right_distance):.2f})",
+    (10, 80),
+    cv2.FONT_HERSHEY_SIMPLEX,
+    0.5,
+    (0, 0, 0),
+    2,
+    cv2.LINE_AA,
+)
+```
+
+<Info>
+  You can use these debug overlays to fine-tune the detection thresholds for your specific camera setup and playing environment.
+</Info>
+
+## Error handling
+
+The system gracefully handles frames where no player is detected:
+
+```python double_dribble.py
+try:
+    left_wrist = rounded_results[0][self.body_index["left_wrist"]]
+    right_wrist = rounded_results[0][self.body_index["right_wrist"]]
+except:
+    print("No human detected.")
+    return pose_annotated_frame, False
+```
+
+When no ball is detected, the holding state automatically resets to prevent false positives:
+
+```python double_dribble.py
+if not ball_detected:
+    self.hold_start_time = None
+    self.is_holding = False
+```
+
+## Model confidence settings
+
+Both models use confidence thresholds to ensure reliable detections:
+
+- **Pose model**: 0.5 confidence threshold (line 104)
+- **Ball model**: 0.65 confidence threshold (line 122)
+
+These values balance detection reliability with coverage, reducing false negatives while maintaining accuracy.

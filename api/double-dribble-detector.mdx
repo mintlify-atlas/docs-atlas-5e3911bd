@@ -1,0 +1,308 @@
+---
+title: DoubleDribbleDetector
+description: Computer vision class that detects double dribble violations in basketball games by tracking ball position and player wrists
+---
+
+## Overview
+
+The `DoubleDribbleDetector` class uses computer vision to detect when a player commits a double dribble violation. It tracks the basketball position and the player's wrists to determine when the ball is held, and then detects if the player starts another dribble after holding the ball.
+
+## Constructor
+
+### `__init__()`
+
+Initializes the detector with YOLO models, video capture, and tracking parameters.
+
+```python
+detector = DoubleDribbleDetector()
+```
+
+#### Instance Variables
+
+The constructor initializes the following instance variables:
+
+<ParamField path="pose_model" type="YOLO">
+  YOLOv8 pose estimation model loaded from `yolov8s-pose.pt` for detecting player keypoints
+</ParamField>
+
+<ParamField path="ball_model" type="YOLO">
+  Custom YOLO model loaded from `basketballModel.pt` for detecting the basketball
+</ParamField>
+
+<ParamField path="cap" type="cv2.VideoCapture">
+  Video capture object for capturing frames from the default camera (index 0)
+</ParamField>
+
+<ParamField path="body_index" type="dict">
+  Dictionary mapping body part names to keypoint indices:
+  - `left_wrist`: 10
+  - `right_wrist`: 9
+</ParamField>
+
+<ParamField path="hold_start_time" type="float | None">
+  Timestamp when the ball first came close to a wrist, used to track hold duration
+</ParamField>
+
+<ParamField path="is_holding" type="bool">
+  Flag indicating whether the player is currently holding the ball
+</ParamField>
+
+<ParamField path="was_holding" type="bool">
+  Flag tracking whether the player was holding the ball before starting a new dribble
+</ParamField>
+
+<ParamField path="hold_duration" type="float" default="0.85">
+  Minimum duration (in seconds) the ball must be near a wrist to be considered held
+</ParamField>
+
+<ParamField path="hold_threshold" type="int" default="300">
+  Maximum distance (in pixels) between ball and wrist to be considered as holding
+</ParamField>
+
+<ParamField path="prev_x_center" type="float | None">
+  X-coordinate of the ball's center in the previous frame
+</ParamField>
+
+<ParamField path="prev_y_center" type="float | None">
+  Y-coordinate of the ball's center in the previous frame
+</ParamField>
+
+<ParamField path="prev_delta_y" type="float | None">
+  Change in the ball's Y-coordinate from the previous frame
+</ParamField>
+
+<ParamField path="dribble_count" type="int" default="0">
+  Number of dribbles detected since the ball was last held
+</ParamField>
+
+<ParamField path="dribble_threshold" type="int" default="18">
+  Minimum Y-coordinate change threshold (in pixels) for detecting a dribble bounce
+</ParamField>
+
+<ParamField path="double_dribble_time" type="float | None">
+  Timestamp when a double dribble violation was last detected
+</ParamField>
+
+<ParamField path="frame_width" type="int">
+  Width of the video frame in pixels, used for positioning overlay text
+</ParamField>
+
+## Methods
+
+### `run()`
+
+Starts the main detection loop, processing video frames until the user quits.
+
+```python
+detector = DoubleDribbleDetector()
+detector.run()
+```
+
+#### Behavior
+
+- Continuously reads frames from the video capture
+- Processes each frame to detect pose and basketball
+- Checks for double dribble violations
+- Displays annotated frames with detection results
+- Applies a red tint and "Double dribble!" message for 3 seconds after detection
+- Exits when 'q' key is pressed
+
+<Info>
+The red tint is applied using `cv2.addWeighted()` with a 70/30 blend ratio between the original frame and the red overlay.
+</Info>
+
+### `process_frame(frame)`
+
+Processes a single frame to detect the player's pose and the basketball.
+
+```python
+pose_annotated_frame, ball_detected = detector.process_frame(frame)
+```
+
+#### Parameters
+
+<ParamField path="frame" type="numpy.ndarray" required>
+  The video frame to process (BGR format from OpenCV)
+</ParamField>
+
+#### Returns
+
+Returns a tuple of `(pose_annotated_frame, ball_detected)`:
+
+- `pose_annotated_frame` (numpy.ndarray): Frame with pose keypoints, ball bounding box, and debug information overlaid
+- `ball_detected` (bool): `True` if a basketball was detected in the frame, `False` otherwise
+
+#### Behavior
+
+1. Runs pose estimation with confidence threshold of 0.5
+2. Extracts left and right wrist coordinates from keypoints
+3. Runs ball detection with confidence threshold of 0.65
+4. For each detected ball:
+   - Calculates ball center coordinates
+   - Updates dribble count based on ball motion
+   - Calculates distance to both wrists
+   - Checks if ball is being held
+   - Draws bounding box and debug annotations
+5. Applies blue tint when ball is being held
+6. Resets holding state if no ball is detected
+
+<Note>
+If no human is detected in the frame, the method returns the annotated frame with `ball_detected=False` and prints "No human detected."
+</Note>
+
+#### Debug Information Displayed
+
+The annotated frame includes:
+- Ball coordinates
+- Left and right wrist coordinates
+- Distance differential (minimum distance to either wrist)
+- Holding status (Yes/No)
+- Current dribble count
+
+### `check_holding(left_distance, right_distance)`
+
+Determines if the ball is being held based on proximity to the player's wrists.
+
+```python
+detector.check_holding(left_distance, right_distance)
+```
+
+#### Parameters
+
+<ParamField path="left_distance" type="float" required>
+  Euclidean distance (in pixels) between the ball center and the left wrist
+</ParamField>
+
+<ParamField path="right_distance" type="float" required>
+  Euclidean distance (in pixels) between the ball center and the right wrist
+</ParamField>
+
+#### Behavior
+
+- If the minimum distance to either wrist is below `hold_threshold` (300 pixels):
+  - Starts timing if this is the first frame below the threshold
+  - Sets `is_holding` to `True` if held for longer than `hold_duration` (0.85 seconds)
+  - Sets `was_holding` to `True` to track the hold event
+  - Resets `dribble_count` to 0
+- If the ball is not close to either wrist:
+  - Resets `hold_start_time` to `None`
+  - Sets `is_holding` to `False`
+
+<Warning>
+The hold detection requires sustained proximity for the full `hold_duration`. Brief contact won't trigger the holding state.
+</Warning>
+
+### `update_dribble_count(x_center, y_center)`
+
+Updates the dribble count based on the vertical motion of the basketball.
+
+```python
+detector.update_dribble_count(ball_x_center, ball_y_center)
+```
+
+#### Parameters
+
+<ParamField path="x_center" type="float" required>
+  Current X-coordinate of the ball's center
+</ParamField>
+
+<ParamField path="y_center" type="float" required>
+  Current Y-coordinate of the ball's center
+</ParamField>
+
+#### Behavior
+
+- Calculates the change in Y-coordinate (`delta_y`) from the previous frame
+- Detects a dribble when:
+  - Previous `delta_y` was greater than `dribble_threshold` (18 pixels) - ball moving down
+  - Current `delta_y` is negative - ball moving up (bouncing)
+- Increments `dribble_count` when a bounce is detected
+- Stores `delta_y` for the next frame's comparison
+
+<Info>
+The dribble detection algorithm identifies the bounce point where the ball changes from downward to upward motion with sufficient magnitude.
+</Info>
+
+### `check_double_dribble()`
+
+Checks if a double dribble violation has occurred and updates the state accordingly.
+
+```python
+detector.check_double_dribble()
+```
+
+#### Behavior
+
+- Detects a double dribble when:
+  - `was_holding` is `True` (player previously held the ball)
+  - `dribble_count` is greater than 0 (player has started dribbling again)
+- When a violation is detected:
+  - Records current time in `double_dribble_time`
+  - Resets `was_holding` to `False`
+  - Resets `dribble_count` to 0
+  - Prints "Double dribble!" to console
+
+## Usage Example
+
+```python
+from double_dribble import DoubleDribbleDetector
+
+# Create detector instance
+detector = DoubleDribbleDetector()
+
+# Start real-time detection
+detector.run()
+```
+
+<CodeGroup>
+
+```python Basic Usage
+# Initialize and run the detector
+detector = DoubleDribbleDetector()
+detector.run()
+```
+
+```python Custom Configuration
+# Initialize detector
+detector = DoubleDribbleDetector()
+
+# Customize detection parameters
+detector.hold_duration = 1.0  # Require 1 second hold
+detector.hold_threshold = 250  # Stricter proximity requirement
+detector.dribble_threshold = 20  # Higher bounce detection threshold
+
+# Start detection
+detector.run()
+```
+
+</CodeGroup>
+
+## Detection Workflow
+
+1. **Frame Capture**: Captures video frames from the camera
+2. **Pose Detection**: Identifies player and extracts wrist positions
+3. **Ball Detection**: Locates basketball in the frame
+4. **Distance Calculation**: Computes distances between ball and wrists
+5. **Hold Detection**: Determines if ball is being held based on proximity and duration
+6. **Dribble Tracking**: Monitors ball's vertical motion to count dribbles
+7. **Violation Detection**: Flags double dribble when player dribbles after holding
+8. **Visual Feedback**: Applies red tint and displays violation message
+
+## Visual Indicators
+
+<Note>
+**Blue Tint**: Applied to the frame when the player is currently holding the ball
+</Note>
+
+<Warning>
+**Red Tint**: Applied for 3 seconds when a double dribble violation is detected, with "Double dribble!" message displayed
+</Warning>
+
+## Requirements
+
+- OpenCV (cv2)
+- NumPy
+- Ultralytics YOLO
+- `yolov8s-pose.pt` model file for pose estimation
+- `basketballModel.pt` model file for basketball detection
+- Camera access for video capture

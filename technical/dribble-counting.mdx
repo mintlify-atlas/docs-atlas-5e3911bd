@@ -1,0 +1,198 @@
+---
+title: Dribble counting implementation
+description: Technical documentation for the basketball dribble detection and counting algorithm
+---
+
+## Overview
+
+The dribble counting system detects and counts basketball dribbles in real-time using YOLOv8 object detection. It tracks the vertical movement of the basketball and identifies dribble patterns based on directional changes in the ball's position.
+
+## Architecture
+
+The implementation uses a class-based architecture with the `DribbleCounter` class handling all detection and counting logic.
+
+### Core components
+
+- **YOLO model**: Custom-trained YOLOv8 model for basketball detection
+- **Position tracking**: Monitors ball center coordinates across frames
+- **Delta calculation**: Computes vertical movement between frames
+- **Pattern detection**: Identifies dribble bounces based on directional changes
+
+## Detection algorithm
+
+### Initialization
+
+The system initializes with specific parameters and state variables:
+
+```python
+class DribbleCounter:
+    def __init__(self):
+        # Load the YOLO model for ball detection
+        self.model = YOLO("/Users/ayushpai/Desktop/yolov8_custom/best17.pt")
+
+        # Open the webcam
+        self.cap = cv2.VideoCapture(1)
+
+        # Initialize variables to store the previous position of the basketball
+        self.prev_x_center = None
+        self.prev_y_center = None
+        self.prev_delta_y = None
+
+        # Initialize the dribble counter
+        self.dribble_count = 0
+
+        # Threshold for the y-coordinate change to be considered as a dribble
+        self.dribble_threshold = 18
+```
+
+<Note>
+The dribble threshold of 18 pixels represents the minimum vertical movement required to register as a significant directional change. This value filters out noise and minor position fluctuations.
+</Note>
+
+### Ball detection
+
+The system processes video frames with a confidence threshold to ensure accurate detections:
+
+```python
+results_list = self.model(frame, verbose=False, conf=0.65)
+
+for results in results_list:
+    for bbox in results.boxes.xyxy:
+        x1, y1, x2, y2 = bbox[:4]
+
+        x_center = (x1 + x2) / 2
+        y_center = (y1 + y2) / 2
+
+        print(f"Ball coordinates: (x={x_center:.2f}, y={y_center:.2f})")
+
+        self.update_dribble_count(x_center, y_center)
+
+        self.prev_x_center = x_center
+        self.prev_y_center = y_center
+```
+
+**Key parameters:**
+- **Confidence threshold**: 0.65 (65%) ensures high-quality detections
+- **Bounding box format**: xyxy (x1, y1, x2, y2)
+- **Center calculation**: Arithmetic mean of opposing corners
+
+### Dribble counting logic
+
+The core algorithm detects dribbles by identifying when the ball changes from downward to upward motion:
+
+```python
+def update_dribble_count(self, x_center, y_center):
+    if self.prev_y_center is not None:
+        delta_y = y_center - self.prev_y_center
+
+        if (
+            self.prev_delta_y is not None
+            and self.prev_delta_y > self.dribble_threshold
+            and delta_y < -self.dribble_threshold
+        ):
+            self.dribble_count += 1
+
+        self.prev_delta_y = delta_y
+```
+
+<Accordion title="How the dribble detection logic works">
+**Step-by-step breakdown:**
+
+1. **Calculate vertical change**: `delta_y = y_center - self.prev_y_center`
+   - Positive delta_y: ball moving down (increasing y-coordinate)
+   - Negative delta_y: ball moving up (decreasing y-coordinate)
+
+2. **Check for directional change**:
+   - `self.prev_delta_y > self.dribble_threshold`: Previous frame showed significant downward movement
+   - `delta_y < -self.dribble_threshold`: Current frame shows significant upward movement
+
+3. **Increment counter**: When both conditions are met, it indicates the ball has bounced
+
+4. **Update state**: Store current delta_y for next frame's comparison
+
+**Why this works:** A dribble consists of the ball hitting the ground and bouncing back up. By detecting when the ball transitions from moving down (positive delta) to moving up (negative delta) with sufficient magnitude, we can reliably count each bounce.
+</Accordion>
+
+## Thresholds and parameters
+
+### Dribble threshold: 18 pixels
+
+This threshold serves multiple purposes:
+
+- **Noise filtering**: Eliminates minor position variations from detection jitter
+- **Minimum bounce height**: Ensures only meaningful dribbles are counted
+- **False positive prevention**: Prevents counting when the ball is being held or moves slowly
+
+<Tip>
+You can adjust the `dribble_threshold` value based on your camera setup. Higher values require more pronounced bounces, while lower values increase sensitivity but may introduce false positives.
+</Tip>
+
+### Confidence threshold: 0.65
+
+The model only processes detections with confidence ≥ 65%:
+
+- Reduces false detections from ball-like objects
+- Ensures stable tracking across frames
+- Balances detection accuracy with frame coverage
+
+## Frame processing pipeline
+
+The main loop follows this sequence:
+
+1. **Capture frame** from webcam
+2. **Run YOLO inference** with confidence filtering
+3. **Extract bounding boxes** and calculate centers
+4. **Update dribble count** using delta_y pattern detection
+5. **Store current position** as previous for next iteration
+6. **Annotate and display** frame with visualizations
+
+<Warning>
+The system requires at least two consecutive frames with valid ball detections to count a dribble. If detection is intermittent, some dribbles may not be counted.
+</Warning>
+
+## Coordinate system
+
+The system uses OpenCV's standard image coordinate system:
+
+- **Origin (0,0)**: Top-left corner of the frame
+- **X-axis**: Increases from left to right
+- **Y-axis**: Increases from top to bottom
+
+<Info>
+Because y-coordinates increase downward, a ball moving down has positive delta_y, and a ball moving up has negative delta_y. This is the opposite of Cartesian coordinates.
+</Info>
+
+## State management
+
+The system maintains three critical state variables:
+
+| Variable | Purpose | Initial Value |
+|----------|---------|---------------|
+| `prev_x_center` | Previous frame's ball x-coordinate | `None` |
+| `prev_y_center` | Previous frame's ball y-coordinate | `None` |
+| `prev_delta_y` | Previous frame's vertical change | `None` |
+
+These enable frame-to-frame motion analysis without storing full frame history.
+
+## Error handling
+
+<Accordion title="Handling missing detections">
+When the ball is not detected in a frame:
+
+- The inner loop doesn't execute
+- Previous position variables remain unchanged
+- Next valid detection resumes tracking
+- Delta calculation waits for `prev_y_center` to be set
+
+This graceful degradation prevents crashes but may miss dribbles during detection gaps.
+</Accordion>
+
+## Performance considerations
+
+- **Model inference**: Primary computational bottleneck
+- **Frame rate dependency**: Higher frame rates improve dribble detection accuracy
+- **Threshold tuning**: May need adjustment based on camera distance and resolution
+
+<Tip>
+For optimal performance, ensure your webcam runs at 30 FPS or higher. Lower frame rates may cause missed bounces if the ball moves significantly between frames.
+</Tip>

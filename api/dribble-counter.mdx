@@ -1,0 +1,262 @@
+---
+title: DribbleCounter
+description: Computer vision class that counts basketball dribbles by tracking the vertical motion and bounce patterns of the ball
+---
+
+## Overview
+
+The `DribbleCounter` class uses YOLO-based computer vision to automatically count basketball dribbles. It tracks the ball's vertical motion and detects bounces by identifying when the ball changes from downward to upward motion with sufficient magnitude.
+
+## Constructor
+
+### `__init__()`
+
+Initializes the dribble counter with a YOLO model, video capture, and tracking parameters.
+
+```python
+counter = DribbleCounter()
+```
+
+#### Instance Variables
+
+The constructor initializes the following instance variables:
+
+<ParamField path="model" type="YOLO">
+  Custom YOLO model for basketball detection, loaded from a trained model file path
+</ParamField>
+
+<ParamField path="cap" type="cv2.VideoCapture">
+  Video capture object for capturing frames from camera (index 1 in the source code)
+</ParamField>
+
+<ParamField path="prev_x_center" type="float | None">
+  X-coordinate of the basketball's center in the previous frame
+</ParamField>
+
+<ParamField path="prev_y_center" type="float | None">
+  Y-coordinate of the basketball's center in the previous frame
+</ParamField>
+
+<ParamField path="prev_delta_y" type="float | None">
+  Change in the ball's Y-coordinate from the previous frame, used to detect direction changes
+</ParamField>
+
+<ParamField path="dribble_count" type="int" default="0">
+  Running count of detected dribbles
+</ParamField>
+
+<ParamField path="dribble_threshold" type="int" default="18">
+  Minimum Y-coordinate change (in pixels) required to register a dribble bounce
+</ParamField>
+
+<Note>
+You will need to update the model path in the constructor to point to your own trained YOLO model for basketball detection.
+</Note>
+
+## Methods
+
+### `run()`
+
+Starts the main detection loop, processing video frames and counting dribbles until the user quits.
+
+```python
+counter = DribbleCounter()
+counter.run()
+```
+
+#### Behavior
+
+- Continuously reads frames from the webcam
+- Runs ball detection on each frame with confidence threshold of 0.65
+- For each detected ball:
+  - Extracts bounding box coordinates
+  - Calculates ball center position
+  - Prints ball coordinates to console
+  - Updates dribble count based on motion
+  - Stores current position for next frame
+- Displays annotated frames with YOLO detections
+- Exits when 'q' key is pressed
+- Releases resources (webcam and windows) on exit
+
+<Info>
+The display window is titled "YOLOv8 Inference" and shows the YOLO model's annotated output with bounding boxes.
+</Info>
+
+### `update_dribble_count(x_center, y_center)`
+
+Updates the dribble count by analyzing the vertical motion of the basketball.
+
+```python
+counter.update_dribble_count(ball_x_center, ball_y_center)
+```
+
+#### Parameters
+
+<ParamField path="x_center" type="float" required>
+  Current X-coordinate of the ball's center
+</ParamField>
+
+<ParamField path="y_center" type="float" required>
+  Current Y-coordinate of the ball's center
+</ParamField>
+
+#### Behavior
+
+- Calculates the change in Y-coordinate (`delta_y`) from the previous frame
+- Detects a dribble bounce when:
+  - `prev_delta_y` exists and is greater than `dribble_threshold` (18 pixels) - indicating significant downward motion
+  - Current `delta_y` is less than negative `dribble_threshold` - indicating significant upward motion
+- Increments `dribble_count` when a bounce is detected
+- Stores `delta_y` as `prev_delta_y` for the next frame's comparison
+
+<Info>
+The algorithm detects the transition point where the ball changes from moving down to moving up, which corresponds to the bounce moment of a dribble.
+</Info>
+
+#### Dribble Detection Logic
+
+```python
+if (
+    self.prev_delta_y is not None
+    and self.prev_delta_y > self.dribble_threshold  # Ball was moving down
+    and delta_y < -self.dribble_threshold  # Ball is now moving up
+):
+    self.dribble_count += 1
+```
+
+<Warning>
+The dribble detection requires both downward and upward motion to exceed the threshold. Small movements or slow bounces below the threshold will not be counted.
+</Warning>
+
+## Usage Example
+
+```python
+from dribble_counting import DribbleCounter
+
+# Create counter instance
+counter = DribbleCounter()
+
+# Start real-time dribble counting
+counter.run()
+```
+
+<CodeGroup>
+
+```python Basic Usage
+# Initialize and run the counter
+counter = DribbleCounter()
+counter.run()
+```
+
+```python Custom Threshold
+# Initialize counter
+counter = DribbleCounter()
+
+# Adjust sensitivity
+counter.dribble_threshold = 15  # Lower threshold for more sensitive detection
+
+# Start counting
+counter.run()
+```
+
+```python Access Dribble Count
+# Initialize counter
+counter = DribbleCounter()
+
+# In a custom loop, you can access the count
+success, frame = counter.cap.read()
+if success:
+    results_list = counter.model(frame, verbose=False, conf=0.65)
+    for results in results_list:
+        for bbox in results.boxes.xyxy:
+            x1, y1, x2, y2 = bbox[:4]
+            x_center = (x1 + x2) / 2
+            y_center = (y1 + y2) / 2
+            counter.update_dribble_count(x_center, y_center)
+            
+    print(f"Total dribbles: {counter.dribble_count}")
+```
+
+</CodeGroup>
+
+## Detection Workflow
+
+1. **Frame Capture**: Captures video frames from the camera
+2. **Ball Detection**: Runs YOLO model to detect basketball and get bounding box
+3. **Center Calculation**: Computes ball's center point from bounding box coordinates
+4. **Motion Analysis**: Calculates vertical displacement (`delta_y`) from previous frame
+5. **Bounce Detection**: Identifies transition from downward to upward motion
+6. **Count Increment**: Increments dribble counter when bounce is detected
+7. **State Update**: Stores current position and delta for next frame
+
+## Coordinate System
+
+In OpenCV's coordinate system:
+- Origin (0, 0) is at the top-left corner
+- Positive Y-axis points downward
+- Therefore:
+  - Positive `delta_y` = ball moving down
+  - Negative `delta_y` = ball moving up
+
+<Note>
+The algorithm uses this coordinate system to detect when the ball transitions from positive `delta_y` (falling) to negative `delta_y` (rising).
+</Note>
+
+## Bounding Box to Center Conversion
+
+The ball's center coordinates are calculated from the YOLO bounding box:
+
+```python
+x1, y1, x2, y2 = bbox[:4]  # Top-left and bottom-right corners
+x_center = (x1 + x2) / 2
+y_center = (y1 + y2) / 2
+```
+
+## Console Output
+
+The counter prints ball coordinates for each detected ball:
+```
+Ball coordinates: (x=320.50, y=240.75)
+```
+
+## Tuning the Threshold
+
+The `dribble_threshold` parameter controls detection sensitivity:
+
+<ParamField path="dribble_threshold" type="int" default="18">
+  - **Higher values** (e.g., 25-30): Less sensitive, only counts hard dribbles with significant bounce
+  - **Lower values** (e.g., 10-15): More sensitive, counts gentler dribbles
+  - **Optimal range**: 15-20 for typical basketball dribbling
+</ParamField>
+
+<Warning>
+Setting the threshold too low may result in false positives from camera shake or small ball movements. Setting it too high may miss legitimate dribbles.
+</Warning>
+
+## Requirements
+
+- OpenCV (cv2)
+- NumPy
+- Ultralytics YOLO
+- Custom trained YOLO model for basketball detection
+- Camera access for video capture
+
+## Model Configuration
+
+<ParamField path="Detection Confidence" type="float" default="0.65">
+  Minimum confidence threshold for basketball detections. Detections below this threshold are ignored.
+</ParamField>
+
+<ParamField path="Verbose Output" type="bool" default="False">
+  YOLO model verbose logging is disabled for cleaner console output
+</ParamField>
+
+## Limitations
+
+<Note>
+The current implementation counts dribbles frame-by-frame. Rapid dribbling or video with high frame rates may require threshold adjustments for accurate counting.
+</Note>
+
+<Info>
+The X-coordinate is tracked but not currently used in the dribble detection logic. It could be extended to detect directional dribbling or filter out non-vertical ball movements.
+</Info>

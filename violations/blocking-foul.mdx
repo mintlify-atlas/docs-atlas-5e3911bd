@@ -1,0 +1,205 @@
+---
+title: Blocking foul detection
+description: Learn how the AI referee detects blocking fouls by measuring contact between defender wrists and shooter upper body during shooting motion
+---
+
+The blocking foul detection system identifies illegal contact between a defender and shooter. It works by detecting when the defender's wrists come into contact with the shooter's upper body (shoulders, elbows, or wrists) during a shot attempt.
+
+## Detection methodology
+
+The system uses pose estimation to track both players and measure the distance between specific body parts:
+
+<Steps>
+  <Step title="Detect multiple players">
+    The YOLO pose model must detect at least two people in the frame
+  </Step>
+  <Step title="Identify roles">
+    The first detected person is assumed to be the shooter, the second is the defender
+  </Step>
+  <Step title="Track keypoints">
+    Extract 17 body keypoints for each player, including shoulders, elbows, and wrists
+  </Step>
+  <Step title="Measure distances">
+    Calculate distances between defender wrists and shooter upper body parts
+  </Step>
+  <Step title="Detect contact">
+    If any distance falls below the threshold, a blocking foul is called
+  </Step>
+</Steps>
+
+<Warning>
+  The current implementation assumes the first detected person is the shooter and the second is the defender. This works well for one-on-one scenarios but may require enhancement for full-game situations.
+</Warning>
+
+## Contact detection algorithm
+
+The foul detection logic compares distances between defender wrists and shooter upper body parts:
+
+```python blocking_foul.py
+def check_foul(defender, shooter):
+    def_parts = ["left_wrist", "right_wrist"]
+    shoot_parts = [
+        "left_shoulder",
+        "right_shoulder",
+        "left_elbow",
+        "right_elbow",
+        "left_wrist",
+        "right_wrist",
+    ]
+    for dpart in def_parts:
+        for spart in shoot_parts:
+            if (
+                calculate_distance(defender[dpart], shooter[spart]) < 40
+            ):
+                return True
+    return False
+```
+
+This creates a matrix of distance checks: 2 defender parts × 6 shooter parts = 12 total distance calculations per frame.
+
+## Distance calculation
+
+The system uses Euclidean distance to measure the space between keypoints:
+
+```python blocking_foul.py
+def calculate_distance(a, b):
+    return np.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2)
+```
+
+This calculates the straight-line distance in pixels between two points in 2D space.
+
+<Info>
+  The distance calculation uses only x and y coordinates. The YOLO pose model also provides a confidence score for each keypoint, but it's not used in the distance calculation.
+</Info>
+
+## Contact threshold
+
+A blocking foul is called when any distance measurement falls below **40 pixels**:
+
+| Threshold | Value | Reasoning |
+|-----------|-------|------------|
+| Contact distance | 40 pixels | Indicates physical contact between defender wrist and shooter upper body |
+
+<Note>
+  The 40-pixel threshold is described as "arbitrary" in the source code and may need tuning based on your camera setup, resolution, and distance from the court.
+</Note>
+
+## Body part tracking
+
+The system tracks 17 keypoints for each detected person:
+
+```python blocking_foul.py
+body_index = {
+    "nose": 0,
+    "left_eye": 1,
+    "right_eye": 2,
+    "left_ear": 3,
+    "right_ear": 4,
+    "left_shoulder": 5,
+    "right_shoulder": 6,
+    "left_elbow": 7,
+    "right_elbow": 8,
+    "left_wrist": 9,
+    "right_wrist": 10,
+    "left_hip": 11,
+    "right_hip": 12,
+    "left_knee": 13,
+    "right_knee": 14,
+    "left_ankle": 15,
+    "right_ankle": 16,
+}
+```
+
+While all 17 keypoints are tracked, only the upper body parts (shoulders, elbows, wrists) are used for foul detection.
+
+## Keypoint extraction
+
+For each detected person, the system extracts and stores their body part positions:
+
+```python blocking_foul.py
+persons = []
+for human in [shooter, defender]:
+    parts = {}
+    for part, index in body_index.items():
+        try:
+            parts[part] = human[index]
+        except:
+            parts[part] = None
+    persons.append(parts)
+```
+
+The try-except block handles cases where certain keypoints aren't detected in a frame, setting them to `None` rather than crashing.
+
+<Tip>
+  If you're experiencing false positives, you could add a confidence check here to only use keypoints with high detection confidence.
+</Tip>
+
+## Visual feedback
+
+When a blocking foul is detected, the system provides immediate visual indication:
+
+```python blocking_foul.py
+if check_foul(persons[1], persons[0]):
+    blue_frame = cv2.addWeighted(
+        frame, 0.7, np.zeros(frame.shape, frame.dtype) + [0, 0, 255], 0.3, 0
+    )
+    cv2.imshow("Foul Detected", blue_frame)
+```
+
+The frame is tinted blue (BGR color [0, 0, 255]) by blending the original frame (70%) with a solid blue overlay (30%).
+
+<Warning>
+  Unlike travel and double dribble detection, the blocking foul visualization doesn't include a text overlay or timeout period. The blue tint appears only while contact is detected.
+</Warning>
+
+## Multi-player requirement
+
+The foul detection only activates when at least two people are detected:
+
+```python blocking_foul.py
+if len(results) >= 2:
+    humans = np.round(results[0].keypoints.numpy(), 1)
+    shooter, defender = humans[:2]
+```
+
+If fewer than two people are visible, the system continues tracking but doesn't perform foul detection.
+
+## Pose model configuration
+
+The system uses the YOLOv8s pose estimation model with specific parameters:
+
+```python blocking_foul.py
+model = YOLO("yolov8s-pose.pt")
+results = model(frame, verbose=False, conf=0.5)
+```
+
+- **Model**: YOLOv8s-pose (small variant for real-time performance)
+- **Confidence threshold**: 0.5 (50% minimum confidence)
+- **Verbose**: False (suppresses console output)
+
+<Info>
+  The 0.5 confidence threshold balances detection reliability with coverage. Lowering it may detect more poses but increase false positives.
+</Info>
+
+## Coordinate precision
+
+Keypoint coordinates are rounded to one decimal place for efficiency:
+
+```python blocking_foul.py
+humans = np.round(results[0].keypoints.numpy(), 1)
+```
+
+This reduces floating-point precision from full float to tenths of a pixel, which is more than sufficient for contact detection while improving processing speed.
+
+## Limitations and improvements
+
+The current implementation has several areas for potential enhancement:
+
+1. **Role assignment**: Assumes first person is shooter, second is defender
+2. **Fixed threshold**: The 40-pixel threshold may not work for all camera setups
+3. **No temporal filtering**: A single frame of contact triggers the foul
+4. **Limited feedback**: No persistent visual indicator or audio alert
+
+<Tip>
+  You could improve accuracy by implementing temporal filtering (requiring contact for multiple consecutive frames) or by dynamically adjusting the threshold based on player distance from the camera.
+</Tip>

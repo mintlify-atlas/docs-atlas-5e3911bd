@@ -1,0 +1,127 @@
+---
+title: Model files
+description: Information about the AI Basketball Referee model files and setup
+---
+
+The AI Basketball Referee uses two YOLO (You Only Look Once) machine learning models to detect basketballs and track player movements in real-time.
+
+## Required model files
+
+You need two model files to run the AI Basketball Referee:
+
+### basketballModel.pt
+
+This is the core basketball detection model that has been custom-trained to recognize basketballs in video frames.
+
+<Info>
+The model was trained on 3000 annotated images containing various basketball poses, lighting conditions, and backgrounds.
+</Info>
+
+<Warning>
+Due to GitHub storage limits, this file is not included in the repository. You must download it separately.
+</Warning>
+
+<Steps>
+  <Step title="Download the model">
+    Download the basketballModel.pt file from [Google Drive](https://drive.google.com/file/d/1e6HLRuhh1IEmxOFaxHQMxfRqhzD92t3B/view?usp=sharing)
+  </Step>
+  
+  <Step title="Place in project root">
+    Place the downloaded file in the root directory of your project, at the same level as the Python scripts
+  </Step>
+  
+  <Step title="Verify placement">
+    Ensure the file is named exactly `basketballModel.pt` for the scripts to load it correctly
+  </Step>
+</Steps>
+
+#### Usage in code
+
+The basketball model is loaded using the Ultralytics YOLO library:
+
+```python
+from ultralytics import YOLO
+
+# Load the basketball detection model
+ball_model = YOLO("basketballModel.pt")
+
+# Run detection on a frame with 65% confidence threshold
+ball_results_list = ball_model(frame, verbose=False, conf=0.65)
+```
+
+### yolov8s-pose.pt
+
+This is the YOLOv8 pose estimation model that detects keypoints on players' bodies. This model is automatically downloaded by the Ultralytics library when you first run the code.
+
+<Info>
+The pose model identifies 17 keypoints on the human body, including ankles, knees, hips, shoulders, elbows, and wrists.
+</Info>
+
+#### Usage in code
+
+The pose model is loaded similarly:
+
+```python
+from ultralytics import YOLO
+
+# Load the pose estimation model
+pose_model = YOLO("yolov8s-pose.pt")
+
+# Run pose detection on a frame with 50% confidence threshold
+pose_results = pose_model(frame, verbose=False, conf=0.5)
+```
+
+## Model confidence thresholds
+
+Both models use confidence thresholds to filter detections:
+
+- **Basketball detection**: 0.65 (65% confidence)
+- **Pose estimation**: 0.5 (50% confidence)
+
+These thresholds can be adjusted in the code to balance between detection accuracy and sensitivity. See the [customization guide](/resources/customization) for details on tuning these parameters.
+
+## Body part indices
+
+The pose estimation model detects keypoints at specific body locations. The indices are defined as:
+
+```python
+body_index = {
+    "nose": 0,
+    "left_eye": 1,
+    "right_eye": 2,
+    "left_ear": 3,
+    "right_ear": 4,
+    "left_shoulder": 5,
+    "right_shoulder": 6,
+    "left_elbow": 7,
+    "right_elbow": 8,
+    "left_wrist": 9,
+    "right_wrist": 10,
+    "left_hip": 11,
+    "right_hip": 12,
+    "left_knee": 13,
+    "right_knee": 14,
+    "left_ankle": 15,
+    "right_ankle": 16
+}
+```
+
+<Note>
+In some scripts, the left and right wrist indices are swapped (9 and 10) to account for mirrored camera images.
+</Note>
+
+## Model output
+
+Both models return results that can be:
+
+- **Visualized**: Use `.plot()` to draw bounding boxes and keypoints on frames
+- **Processed**: Access raw coordinates and confidence scores for custom logic
+
+```python
+# Visualize results
+annotated_frame = results[0].plot()
+
+# Access keypoints programmatically
+rounded_results = np.round(results[0].keypoints.numpy(), 1)
+left_ankle = rounded_results[0][body_index["left_ankle"]]
+```

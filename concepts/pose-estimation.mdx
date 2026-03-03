@@ -1,0 +1,394 @@
+---
+title: Pose estimation
+description: Learn how YOLO pose estimation tracks player movements and body keypoints for violation detection
+---
+
+Pose estimation enables the AI Basketball Referee to track player body movements by detecting keypoints on each player's body. This data is essential for counting steps, determining ball possession, and identifying various basketball violations.
+
+## Model overview
+
+The system uses YOLOv8's pre-trained pose estimation model:
+
+- **Model file**: yolov8s-pose.pt
+- **Model size**: Small (s) variant, balancing speed and accuracy
+- **Keypoints detected**: 17 body keypoints per person
+- **Framework**: Ultralytics YOLOv8 pose estimation
+
+<Info>
+The "s" variant (small) is chosen for its real-time performance capabilities while maintaining sufficient accuracy for basketball violation detection.
+</Info>
+
+## Loading the pose model
+
+You initialize the pose estimation model using the Ultralytics YOLO class:
+
+```python
+from ultralytics import YOLO
+
+# Load the pre-trained pose estimation model
+pose_model = YOLO("yolov8s-pose.pt")
+```
+
+<Note>
+Unlike the basketball detection model, yolov8s-pose.pt is a pre-trained model that will be automatically downloaded by Ultralytics on first use.
+</Note>
+
+## Detected keypoints
+
+The pose model detects 17 keypoints on each person's body:
+
+```python
+body_index = {
+    "nose": 0,
+    "left_eye": 1,
+    "right_eye": 2,
+    "left_ear": 3,
+    "right_ear": 4,
+    "left_shoulder": 5,
+    "right_shoulder": 6,
+    "left_elbow": 7,
+    "right_elbow": 8,
+    "left_wrist": 9,
+    "right_wrist": 10,
+    "left_hip": 11,
+    "right_hip": 12,
+    "left_knee": 13,
+    "right_knee": 14,
+    "left_ankle": 15,
+    "right_ankle": 16
+}
+```
+
+### Key body parts for violation detection
+
+- **Wrists (9, 10)**: Used for detecting ball possession and holding
+- **Ankles (15, 16)**: Critical for step counting and travel detection
+- **Knees (13, 14)**: Additional context for movement validation
+- **Shoulders/Elbows (5-8)**: Used for foul detection
+
+## Running pose estimation
+
+You process video frames through the pose model with confidence thresholds:
+
+```python
+import cv2
+
+# Capture video frame
+cap = cv2.VideoCapture(0)
+success, frame = cap.read()
+
+# Run pose estimation
+pose_results = pose_model(frame, verbose=False, conf=0.5)
+```
+
+### Detection parameters
+
+- **verbose=False**: Suppresses console logging
+- **conf=0.5**: 50% confidence threshold for keypoint detection
+
+<Tip>
+The 0.5 confidence threshold is lower than basketball detection (0.65) because pose estimation needs to detect keypoints even when partially visible or at challenging angles.
+</Tip>
+
+## Processing keypoint data
+
+The model returns keypoint coordinates and confidence scores that you need to extract and process:
+
+```python
+import numpy as np
+
+# Get keypoint results and round to 1 decimal place
+rounded_results = np.round(pose_results[0].keypoints.numpy(), 1)
+
+try:
+    # Extract specific keypoints for first detected person
+    left_ankle = rounded_results[0][body_index["left_ankle"]]
+    right_ankle = rounded_results[0][body_index["right_ankle"]]
+    left_wrist = rounded_results[0][body_index["left_wrist"]]
+    right_wrist = rounded_results[0][body_index["right_wrist"]]
+except:
+    print("No human detected.")
+```
+
+### Keypoint data format
+
+Each keypoint is represented as a 3-element array:
+- **Index 0**: x-coordinate (horizontal position in pixels)
+- **Index 1**: y-coordinate (vertical position in pixels)
+- **Index 2**: confidence score (0.0 to 1.0)
+
+```python
+# Example keypoint: [245.3, 512.7, 0.89]
+# x=245.3, y=512.7, confidence=0.89 (89%)
+
+x_position = left_ankle[0]
+y_position = left_ankle[1]
+confidence = left_ankle[2]
+```
+
+## Step counting algorithm
+
+Step detection monitors ankle movement to count player steps:
+
+```python
+# Initialize step counting variables
+step_count = 0
+prev_left_ankle_y = None
+prev_right_ankle_y = None
+step_threshold = 5
+min_wait_frames = 7
+wait_frames = 0
+
+# Extract ankle keypoints
+left_knee = rounded_results[0][body_index["left_knee"]]
+right_knee = rounded_results[0][body_index["right_knee"]]
+left_ankle = rounded_results[0][body_index["left_ankle"]]
+right_ankle = rounded_results[0][body_index["right_ankle"]]
+
+# Check if all keypoints are detected with sufficient confidence
+if (
+    (left_knee[2] > 0.5)
+    and (right_knee[2] > 0.5)
+    and (left_ankle[2] > 0.5)
+    and (right_ankle[2] > 0.5)
+):
+    if (
+        prev_left_ankle_y is not None
+        and prev_right_ankle_y is not None
+        and wait_frames == 0
+    ):
+        # Calculate vertical movement of each ankle
+        left_diff = abs(left_ankle[1] - prev_left_ankle_y)
+        right_diff = abs(right_ankle[1] - prev_right_ankle_y)
+        
+        # Step detected if either ankle moved significantly
+        if max(left_diff, right_diff) > step_threshold:
+            step_count += 1
+            total_step_count += 1
+            print(f"Step taken: {step_count}")
+            wait_frames = min_wait_frames
+    
+    # Update previous ankle positions
+    prev_left_ankle_y = left_ankle[1]
+    prev_right_ankle_y = right_ankle[1]
+    
+    # Decrement wait frame counter
+    if wait_frames > 0:
+        wait_frames -= 1
+```
+
+### How step counting works
+
+<Steps>
+  <Step title="Confidence validation">
+    Verify that both knees and ankles are detected with >50% confidence to ensure reliable tracking.
+  </Step>
+  
+  <Step title="Movement calculation">
+    Calculate the absolute vertical movement (y-coordinate change) for both ankles since the previous frame.
+  </Step>
+  
+  <Step title="Threshold comparison">
+    If the maximum ankle movement exceeds the threshold (5 pixels), register a step.
+  </Step>
+  
+  <Step title="Cooldown period">
+    Apply a wait period (7 frames) to prevent double-counting the same step.
+  </Step>
+</Steps>
+
+<Note>
+The system uses vertical ankle movement (y-coordinate) because stepping involves lifting the foot off the ground, which changes the ankle's vertical position in the camera frame.
+</Note>
+
+## Ball possession detection
+
+You can determine if a player is holding the basketball by measuring the distance between wrists and the ball:
+
+```python
+class BallHoldingDetector:
+    def __init__(self):
+        self.hold_start_time = None
+        self.is_holding = False
+        self.hold_duration = 0.85  # seconds
+        self.hold_threshold = 300  # pixels
+    
+    def check_holding(self, ball_x, ball_y, left_wrist, right_wrist):
+        # Calculate distance from ball to each wrist
+        left_distance = np.hypot(
+            ball_x - left_wrist[0], 
+            ball_y - left_wrist[1]
+        )
+        right_distance = np.hypot(
+            ball_x - right_wrist[0], 
+            ball_y - right_wrist[1]
+        )
+        
+        # Check if ball is near either wrist
+        if min(left_distance, right_distance) < self.hold_threshold:
+            # Start timing if this is first frame of holding
+            if self.hold_start_time is None:
+                self.hold_start_time = time.time()
+            # Confirm holding if duration threshold met
+            elif time.time() - self.hold_start_time > self.hold_duration:
+                self.is_holding = True
+                print("The ball is being held.")
+        else:
+            # Reset if ball moves away from wrists
+            self.hold_start_time = None
+            self.is_holding = False
+```
+
+<Warning>
+Ball possession detection requires both the basketball and wrist keypoints to be clearly visible. Occlusions or camera angles that hide hands can cause false negatives.
+</Warning>
+
+## Travel detection integration
+
+The system combines step counting with basketball detection to identify travel violations:
+
+```python
+# Travel occurs when player takes 2+ steps without dribbling
+if ball_detected and step_count >= 2 and dribble_count == 0:
+    print("Travel detected!")
+    step_count = 0  # Reset step count
+    travel_detected = True
+    travel_timestamp = time.time()
+
+# Reset step count when dribble occurs
+if dribble_count > 0:
+    step_count = 0
+    dribble_count = 0
+```
+
+## Double dribble detection integration
+
+Double dribbles are detected by tracking the holding state and subsequent dribbles:
+
+```python
+class DoubleDribbleDetector:
+    def __init__(self):
+        self.is_holding = False
+        self.was_holding = False
+        self.dribble_count = 0
+    
+    def check_double_dribble(self):
+        # Double dribble: player held ball, then dribbled again
+        if self.was_holding and self.dribble_count > 0:
+            self.double_dribble_time = time.time()
+            self.was_holding = False
+            self.dribble_count = 0
+            print("Double dribble!")
+```
+
+## Foul detection
+
+You can detect blocking fouls by measuring distances between defender and shooter keypoints:
+
+```python
+def calculate_distance(a, b):
+    return np.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2)
+
+def check_foul(defender, shooter):
+    # Check defender wrists against shooter upper body
+    def_parts = ["left_wrist", "right_wrist"]
+    shoot_parts = [
+        "left_shoulder", "right_shoulder",
+        "left_elbow", "right_elbow",
+        "left_wrist", "right_wrist"
+    ]
+    
+    for dpart in def_parts:
+        for spart in shoot_parts:
+            # Foul if defender wrist too close to shooter
+            if calculate_distance(defender[dpart], shooter[spart]) < 40:
+                return True
+    return False
+
+# Process multiple detected people
+if len(results) >= 2:
+    humans = np.round(results[0].keypoints.numpy(), 1)
+    shooter, defender = humans[:2]
+    
+    if check_foul(defender, shooter):
+        print("Blocking foul detected!")
+```
+
+<Tip>
+Foul detection requires at least two people to be detected in the frame and assumes the first detected person is the shooter and the second is the defender.
+</Tip>
+
+## Visualizing pose estimation
+
+You can annotate frames with detected keypoints and skeleton:
+
+```python
+# Use built-in YOLO plotting
+pose_annotated_frame = pose_results[0].plot()
+
+# Combine with basketball detection visualization
+combined_frame = cv2.addWeighted(
+    annotated_frame, 0.6,
+    pose_annotated_frame, 0.4,
+    0
+)
+
+# Add custom text annotations
+cv2.putText(
+    frame,
+    f"Left Wrist: ({left_wrist[0]:.2f}, {left_wrist[1]:.2f})",
+    (10, 40),
+    cv2.FONT_HERSHEY_SIMPLEX,
+    0.5,
+    (0, 0, 0),
+    2,
+    cv2.LINE_AA
+)
+```
+
+## Performance optimization
+
+Optimize pose estimation for real-time performance:
+
+<Accordion title="Confidence threshold tuning">
+  - **Higher threshold (0.6-0.8)**: More reliable keypoints, may lose tracking
+  - **Lower threshold (0.3-0.5)**: Better tracking, more noise
+  - **Recommended (0.5)**: Balanced for basketball scenarios
+</Accordion>
+
+<Accordion title="Keypoint filtering">
+  Only process the keypoints you need for your specific violation detection:
+  ```python
+  # Only extract relevant keypoints
+  required_parts = ["left_ankle", "right_ankle", "left_wrist", "right_wrist"]
+  keypoints = {part: rounded_results[0][body_index[part]] for part in required_parts}
+  ```
+</Accordion>
+
+<Accordion title="Multi-person scenarios">
+  - Process only the closest person to the camera
+  - Filter by court position if court boundaries are known
+  - Implement player tracking to maintain consistency across frames
+</Accordion>
+
+## Handling detection challenges
+
+Be aware of common pose estimation challenges:
+
+<Warning>
+- **Occlusions**: Keypoints blocked by other players or objects cannot be detected
+- **Camera angle**: Extreme angles make some keypoints difficult to detect
+- **Clothing**: Loose or baggy clothing can obscure body joint positions
+- **Lighting**: Shadows or glare can reduce keypoint confidence scores
+- **Motion blur**: Fast movements create blur that reduces detection accuracy
+</Warning>
+
+## Best practices
+
+Follow these recommendations for reliable pose estimation:
+
+1. **Always check confidence scores**: Verify keypoints have sufficient confidence before using them
+2. **Handle missing detections**: Implement fallback logic when pose detection fails
+3. **Use temporal smoothing**: Average keypoint positions across multiple frames to reduce jitter
+4. **Validate keypoint relationships**: Check that detected keypoints form anatomically plausible poses
+5. **Adjust thresholds empirically**: Tune movement thresholds based on your specific camera setup and court size

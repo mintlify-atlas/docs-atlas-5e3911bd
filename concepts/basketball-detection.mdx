@@ -1,0 +1,286 @@
+---
+title: Basketball detection
+description: Understand how the custom YOLO model detects basketballs in real-time video frames
+---
+
+The basketball detection component uses a custom-trained YOLO model to identify and track basketballs throughout gameplay. This model serves as the foundation for detecting dribbles and determining when players have possession of the ball.
+
+## Model overview
+
+The basketball detection model (`basketballModel.pt`) is a custom YOLO model trained specifically for basketball recognition:
+
+- **Training dataset**: 3,000 annotated images
+- **Model format**: PyTorch (.pt) format
+- **Framework**: Ultralytics YOLO implementation
+- **Detection target**: Basketball objects in various game situations
+
+<Info>
+The model was trained on diverse images containing various basketball poses, lighting conditions, and backgrounds to ensure robust detection across different game scenarios.
+</Info>
+
+## Loading the model
+
+You initialize the basketball detection model using the Ultralytics YOLO class:
+
+```python
+from ultralytics import YOLO
+
+# Load the custom basketball detection model
+ball_model = YOLO("basketballModel.pt")
+```
+
+<Warning>
+The basketballModel.pt file is approximately 100MB and exceeds GitHub storage limits. You must download it separately from the provided Google Drive link.
+</Warning>
+
+## Running detection
+
+The model processes video frames to detect basketballs with configurable confidence thresholds:
+
+```python
+import cv2
+
+# Capture video frame
+cap = cv2.VideoCapture(0)
+success, frame = cap.read()
+
+# Run basketball detection
+ball_results_list = ball_model(frame, verbose=False, conf=0.65)
+```
+
+### Detection parameters
+
+- **verbose=False**: Suppresses console output for cleaner logging
+- **conf=0.65**: Sets minimum confidence threshold at 65% to reduce false positives
+
+<Note>
+The 0.65 confidence threshold was empirically determined to balance detection sensitivity with false positive rates. You can adjust this based on your specific video quality and requirements.
+</Note>
+
+## Processing detection results
+
+The model returns bounding boxes for detected basketballs, which you can iterate through:
+
+```python
+ball_detected = False
+
+for results in ball_results_list:
+    for bbox in results.boxes.xyxy:
+        # Extract bounding box coordinates
+        x1, y1, x2, y2 = bbox[:4]
+        
+        # Calculate center point of basketball
+        x_center = (x1 + x2) / 2
+        y_center = (y1 + y2) / 2
+        
+        ball_detected = True
+        
+        # Draw bounding box on frame
+        cv2.rectangle(
+            frame,
+            (int(x1), int(y1)),
+            (int(x2), int(y2)),
+            (0, 255, 0),
+            2
+        )
+```
+
+### Bounding box format
+
+The `boxes.xyxy` format provides coordinates as:
+- **x1, y1**: Top-left corner of bounding box
+- **x2, y2**: Bottom-right corner of bounding box
+
+## Tracking ball movement
+
+You can track the basketball's position across frames to detect motion patterns:
+
+```python
+# Initialize tracking variables
+prev_x_center = None
+prev_y_center = None
+prev_delta_y = None
+
+while cap.isOpened():
+    success, frame = cap.read()
+    ball_results_list = ball_model(frame, verbose=False, conf=0.65)
+    
+    for results in ball_results_list:
+        for bbox in results.boxes.xyxy:
+            x1, y1, x2, y2 = bbox[:4]
+            x_center = (x1 + x2) / 2
+            y_center = (y1 + y2) / 2
+            
+            # Calculate vertical movement
+            if prev_y_center is not None:
+                delta_y = y_center - prev_y_center
+                
+                # Track change in movement direction
+                if prev_delta_y is not None:
+                    # Analyze movement pattern
+                    pass
+                
+                prev_delta_y = delta_y
+            
+            # Update previous position
+            prev_x_center = x_center
+            prev_y_center = y_center
+```
+
+<Tip>
+Tracking delta_y (vertical movement) is particularly useful for detecting dribbles, which show a characteristic bounce pattern of downward then upward motion.
+</Tip>
+
+## Dribble detection algorithm
+
+The system detects dribbles by analyzing the basketball's vertical motion pattern:
+
+```python
+dribble_count = 0
+dribble_threshold = 18  # Minimum pixels of movement
+
+if prev_y_center is not None:
+    delta_y = y_center - prev_y_center
+    
+    # Dribble pattern: ball moving down (prev_delta_y > threshold)
+    # then moving up (delta_y < -threshold)
+    if (
+        prev_delta_y is not None
+        and prev_delta_y > dribble_threshold
+        and delta_y < -dribble_threshold
+    ):
+        dribble_count += 1
+        total_dribble_count += 1
+        print(f"Dribble detected: {total_dribble_count}")
+    
+    prev_delta_y = delta_y
+```
+
+### How dribble detection works
+
+<Steps>
+  <Step title="Downward motion detection">
+    The ball moves downward (increasing y-coordinate) by more than the threshold (18 pixels).
+  </Step>
+  
+  <Step title="Bounce point">
+    The ball reaches its lowest point and bounces off the floor.
+  </Step>
+  
+  <Step title="Upward motion detection">
+    The ball moves upward (decreasing y-coordinate) by more than the threshold.
+  </Step>
+  
+  <Step title="Dribble confirmed">
+    The complete down-up pattern confirms one dribble, incrementing the counter.
+  </Step>
+</Steps>
+
+## Handling detection failures
+
+The system tracks frames where the basketball is not detected to handle temporary occlusions:
+
+```python
+ball_not_detected_frames = 0
+max_ball_not_detected_frames = 20
+
+# Increment counter when ball is not detected
+if not ball_detected:
+    ball_not_detected_frames += 1
+else:
+    ball_not_detected_frames = 0
+
+# Reset step count if ball is missing too long
+if ball_not_detected_frames >= max_ball_not_detected_frames:
+    step_count = 0
+```
+
+<Note>
+The 20-frame threshold (approximately 0.67 seconds at 30 fps) allows for brief occlusions without resetting the violation detection state.
+</Note>
+
+## Visualizing detections
+
+You can annotate frames with detection results for debugging and display:
+
+```python
+# Use built-in YOLO plotting
+for results in ball_results_list:
+    annotated_frame = results.plot()
+
+# Or manually annotate
+cv2.putText(
+    frame,
+    f"Ball: ({x_center:.2f}, {y_center:.2f})",
+    (10, 20),
+    cv2.FONT_HERSHEY_SIMPLEX,
+    0.5,
+    (0, 0, 0),
+    2,
+    cv2.LINE_AA
+)
+
+cv2.putText(
+    frame,
+    f"Dribble count: {total_dribble_count}",
+    (50, 950),
+    cv2.FONT_HERSHEY_SIMPLEX,
+    1,
+    (0, 0, 0),
+    4,
+    cv2.LINE_AA
+)
+```
+
+## Performance considerations
+
+To optimize basketball detection performance:
+
+<Accordion title="Confidence threshold tuning">
+  - **Higher threshold (0.7-0.9)**: Fewer false positives, may miss some detections
+  - **Lower threshold (0.5-0.6)**: More detections, higher false positive rate
+  - **Recommended (0.65)**: Balanced approach for most scenarios
+</Accordion>
+
+<Accordion title="Frame rate optimization">
+  - Process every frame for maximum accuracy
+  - Skip frames (process every 2nd or 3rd) for faster processing on slower hardware
+  - Use GPU acceleration when available for YOLO inference
+</Accordion>
+
+<Accordion title="Video input quality">
+  - **Resolution**: Higher resolution improves detection but slows processing
+  - **Lighting**: Ensure consistent, bright lighting for best results
+  - **Camera angle**: Overhead or courtside angles work best
+  - **Distance**: Basketball should be clearly visible, not too small in frame
+</Accordion>
+
+## Model limitations
+
+Be aware of these limitations when using basketball detection:
+
+<Warning>
+- **Occlusions**: The model cannot detect basketballs blocked by players or other objects
+- **Motion blur**: Fast-moving basketballs may appear blurred and harder to detect
+- **Similar objects**: Orange circular objects may trigger false positives
+- **Lighting changes**: Sudden lighting variations can impact detection confidence
+</Warning>
+
+## Integration with pose estimation
+
+Basketball detection works in tandem with pose estimation to enable violation detection:
+
+```python
+# Process both models on same frame
+ball_results = ball_model(frame, verbose=False, conf=0.65)
+pose_results = pose_model(frame, verbose=False, conf=0.5)
+
+# Combine detections for violation logic
+if ball_detected and step_count >= 2 and dribble_count == 0:
+    print("Travel detected!")
+```
+
+The basketball position data is correlated with player keypoint positions to determine:
+- Ball possession (proximity to player wrists)
+- Dribbling state (ball vertical motion)
+- Violation conditions (steps without dribbles)
