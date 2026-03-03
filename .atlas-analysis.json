@@ -1,0 +1,92 @@
+{
+  "projectType": "ai-ml",
+  "projectName": "AI Basketball Referee",
+  "projectDescription": "Computer vision system using YOLO models to detect basketball violations like travels, double dribbles, and fouls in real-time.",
+  "theme": "aspen",
+  "primaryColor": "#FF6B35",
+  "lightColor": "#F7931E",
+  "darkColor": "#C1440E",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/how-it-works",
+              "concepts/basketball-detection",
+              "concepts/pose-estimation"
+            ]
+          },
+          {
+            "group": "Violation Detection",
+            "pages": [
+              "violations/travel-detection",
+              "violations/double-dribble",
+              "violations/blocking-foul"
+            ]
+          },
+          {
+            "group": "Technical Details",
+            "pages": [
+              "technical/dribble-counting",
+              "technical/step-counting",
+              "technical/holding-detection"
+            ]
+          },
+          {
+            "group": "Resources",
+            "pages": [
+              "resources/model-files",
+              "resources/customization"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Detection Classes",
+            "pages": [
+              "api/double-dribble-detector",
+              "api/ball-holding-detector",
+              "api/dribble-counter"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Custom YOLO basketball detection model trained on 3000+ annotated images",
+    "Real-time travel violation detection using pose estimation",
+    "Double dribble detection with ball holding analysis",
+    "Blocking foul detection through player interaction analysis",
+    "Video recording of detected violations with frame buffering",
+    "Customizable detection thresholds and parameters"
+  ],
+  "publicApiSurface": [
+    "DoubleDribbleDetector",
+    "DoubleDribbleDetector.run()",
+    "DoubleDribbleDetector.process_frame(frame)",
+    "DoubleDribbleDetector.check_holding(left_distance, right_distance)",
+    "DoubleDribbleDetector.update_dribble_count(x_center, y_center)",
+    "DoubleDribbleDetector.check_double_dribble()",
+    "BallHoldingDetector",
+    "BallHoldingDetector.run()",
+    "BallHoldingDetector.process_frame(frame)",
+    "BallHoldingDetector.check_holding(left_distance, right_distance)",
+    "DribbleCounter",
+    "DribbleCounter.run()",
+    "DribbleCounter.update_dribble_count(x_center, y_center)"
+  ]
+}
